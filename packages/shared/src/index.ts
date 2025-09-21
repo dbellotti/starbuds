@@ -6,6 +6,23 @@ export const MAX_PLAYERS = 4;
 
 export type EnemyKind = 'fox' | 'hawk' | 'snake';
 
+export const BASE_PLAYER_DAMAGE = 25;
+export const PROJECTILE_SPEED = 420;
+export const PROJECTILE_LIFETIME = 1.2; // seconds
+export const PROJECTILE_RADIUS = 18;
+export const PROJECTILE_COOLDOWN = 0.35; // seconds
+
+export interface PlayerSummary {
+  id: string;
+  displayName: string;
+}
+
+export const ENEMY_XP_VALUES: Record<EnemyKind, number> = {
+  fox: 15,
+  hawk: 18,
+  snake: 12
+};
+
 export type PlayerInputButton =
   | 'moveUp'
   | 'moveDown'
@@ -43,6 +60,7 @@ export interface WelcomeMessage {
   playerId: string;
   tickRate: number;
   level: LevelData;
+  players: PlayerSummary[];
 }
 
 export interface SnapshotMessage {
@@ -66,18 +84,40 @@ export interface EnemyState {
   maxHealth: number;
 }
 
+export interface ProjectileState {
+  id: string;
+  ownerId: string;
+  position: Vector2D;
+  velocity: Vector2D;
+  ttl: number; // seconds remaining
+}
+
+export interface XpDropState {
+  id: string;
+  amount: number;
+  position: Vector2D;
+  age: number; // seconds alive
+}
+
 export interface WorldSnapshot {
   tick: number;
   players: PlayerState[];
   enemies: EnemyState[];
+  projectiles: ProjectileState[];
+  xpDrops: XpDropState[];
 }
 
 export interface PlayerState {
   id: string;
+  displayName: string;
   position: Vector2D;
   velocity: Vector2D;
   facing: number; // radians
   psychicLevel: number;
+  maxHealth: number;
+  health: number;
+  experience: number;
+  experienceToNext: number;
 }
 
 export interface Vector2D {

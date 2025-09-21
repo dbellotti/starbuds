@@ -6,7 +6,8 @@ import {
   PingMessage,
   ServerMessage,
   WorldSnapshot,
-  LevelData
+  LevelData,
+  PlayerSummary
 } from '@farsight/shared';
 
 export type SnapshotListener = (snapshot: WorldSnapshot) => void;
@@ -16,12 +17,14 @@ interface WelcomeState {
   playerId: string;
   tickRate: number;
   level: LevelData;
+  players: PlayerSummary[];
 }
 
 export class GameNetwork {
   private socket: WebSocket | null = null;
   private welcome: WelcomeState | null = null;
   private level: LevelData | null = null;
+  private playerSummaries: PlayerSummary[] = [];
   private readonly snapshotListeners = new Set<SnapshotListener>();
   private readonly disconnectListeners = new Set<DisconnectListener>();
   private inputSequence = 0;
@@ -61,8 +64,14 @@ export class GameNetwork {
         if (data?.type === 'welcome') {
           socket.removeEventListener('message', handleWelcome as EventListener);
           window.clearTimeout(timeout);
-          this.welcome = { playerId: data.playerId, tickRate: data.tickRate, level: data.level };
+          this.welcome = {
+            playerId: data.playerId,
+            tickRate: data.tickRate,
+            level: data.level,
+            players: data.players
+          };
           this.level = data.level;
+          this.playerSummaries = data.players;
           this.startPingLoop();
           resolve(this.welcome);
         }
@@ -89,6 +98,10 @@ export class GameNetwork {
 
   getLevel(): LevelData | null {
     return this.level;
+  }
+
+  getPlayerSummaries(): PlayerSummary[] {
+    return this.playerSummaries;
   }
 
   onSnapshot(listener: SnapshotListener): () => void {
@@ -137,6 +150,8 @@ export class GameNetwork {
     }
     this.socket = null;
     this.welcome = null;
+    this.level = null;
+    this.playerSummaries = [];
   }
 
   private handleMessage = (event: MessageEvent<string>) => {
@@ -147,6 +162,10 @@ export class GameNetwork {
 
     switch (message.type) {
       case 'snapshot': {
+        this.playerSummaries = message.snapshot.players.map((player) => ({
+          id: player.id,
+          displayName: player.displayName
+        }));
         for (const listener of this.snapshotListeners) {
           listener(message.snapshot);
         }

@@ -16,9 +16,100 @@ body {
   width: 100vw;
   height: 100vh;
   overflow: hidden;
+  position: relative;
 }
 
 canvas {
   display: block;
   image-rendering: pixelated;
+}
+
+.hud-root {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  font-family: 'Press Start 2P', system-ui, sans-serif;
+  color: #dbeafe;
+  transition: opacity 0.3s ease;
+}
+
+.hud-panel {
+  position: absolute;
+  bottom: 24px;
+  left: 24px;
+  background: rgba(15, 23, 42, 0.82);
+  border: 2px solid rgba(96, 165, 250, 0.45);
+  box-shadow: 0 0 12px rgba(37, 99, 235, 0.35);
+  border-radius: 10px;
+  padding: 16px 20px;
+  min-width: 260px;
+  pointer-events: none;
+}
+
+.hud-name {
+  font-size: 14px;
+  margin-bottom: 6px;
+  color: #facc15;
+  text-shadow: 0 0 6px rgba(250, 204, 21, 0.45);
+}
+
+.hud-level {
+  font-size: 12px;
+  margin-bottom: 12px;
+  color: #a5b4fc;
+}
+
+.hud-bar {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+
+.hud-bar-label {
+  font-size: 11px;
+  opacity: 0.75;
+}
+
+.hud-bar-track {
+  position: relative;
+  background: rgba(15, 23, 42, 0.88);
+  border: 1px solid rgba(148, 163, 184, 0.35);
+  border-radius: 6px;
+  height: 14px;
+  overflow: hidden;
+}
+
+.hud-bar-fill {
+  position: absolute;
+  inset: 0;
+  width: 0;
+  transition: width 0.12s ease;
+}
+
+.hud-bar-value {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
+  color: #e2e8f0;
+  text-shadow: 0 0 4px rgba(15, 23, 42, 0.6);
+}
+
+.hud-health .hud-bar-fill {
+  background: linear-gradient(90deg, #ef4444, #f87171);
+}
+
+.hud-xp .hud-bar-fill {
+  background: linear-gradient(90deg, #38bdf8, #6366f1);
+}
+
+.hud-tip {
+  font-size: 9px;
+  opacity: 0.55;
+  margin-top: 6px;
+  text-transform: uppercase;
+  letter-spacing: 1px;
 }
