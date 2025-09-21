@@ -24,7 +24,8 @@ This plan keeps the game fun at every stage while steering toward a rich, perfor
 - **Networking DX**: Web client now auto-targets the hosting machine for websockets (configurable with `VITE_SERVER_PORT`/`VITE_SERVER_ORIGIN`) so Tailscale guests join without custom builds. ✅
 
 ## Milestone 3 – Content Expansion & 3D Adoption (Week 8–11)
-- **Gameplay & Balance**: Enrich enemy roster (diving hawk, burrowing weasel, support owl) and boss loot bursts with psychic artifacts influencing builds. Tune XP/health curves with telemetry from playtests.
+- **Gameplay & Balance**: Enrich enemy roster (diving hawk, burrowing weasel, support owl) and boss loot bursts with psychic artifacts influencing builds. Tune XP/health curves with telemetry from playtests. Ship the "Foraging Aura" loot magnet augment line so XP orbs drift toward nearby players and scale with level.
+- **Control & Feel**: Decouple movement from facing; extend input snapshots with pointer-derived `aimHeading` so avatars and projectiles align with the reticle across both camera modes.
 - **Visual & Audio**: Swap primary characters to rigged 3D meshes with idle/attack animations; finalize 35° tilted camera if readability remains strong. Add environment props (windmill, grass sway) and parallax skybox.
 - **VFX & UI**: Craft VFX library (shader-based psychic distortions, XP orbital pulses) and update HUD with build summary + boss telegraph banner.
 - **Performance**: Implement texture atlas packing pipeline, add frustum culling for particles, and run mid-hardware benchmark (Chrome on M1 Air + mid-tier Windows laptop).
