@@ -1,4 +1,11 @@
-import type { AugmentId, AugmentOption, EnemyKind, WorldSnapshot } from '@farsight/shared';
+import type {
+  AugmentId,
+  AugmentOption,
+  EnemyKind,
+  QuickPingBroadcastMessage,
+  QuickPingKind,
+  WorldSnapshot
+} from '@farsight/shared';
 import { PLAYER_HURT_FLASH_TIME, getAugmentOption } from '@farsight/shared';
 
 interface LevelUpUiOffer {
@@ -14,10 +21,19 @@ export interface Hud {
   clearLevelUp(): void;
   showAugmentToast(augmentId: AugmentId, level: number, isLocal: boolean): void;
   showBossSpawn(kind: EnemyKind): void;
+  showPingAlert(message: QuickPingBroadcastMessage, isLocal: boolean): void;
+  beginPingSelection(): void;
+  updatePingCursor(clientX: number, clientY: number): void;
+  commitPingSelection(): QuickPingKind | null;
+  cancelPingSelection(): void;
   dispose(): void;
 }
 
-export function createHud(parent: HTMLElement): Hud {
+export interface HudOptions {
+  onReadyChange?: (ready: boolean) => void;
+}
+
+export function createHud(parent: HTMLElement, options: HudOptions = {}): Hud {
   const root = document.createElement('div');
   root.className = 'hud-root';
   parent.appendChild(root);
@@ -56,12 +72,14 @@ export function createHud(parent: HTMLElement): Hud {
 
   const tipLabel = document.createElement('div');
   tipLabel.className = 'hud-tip';
-  tipLabel.textContent = 'LMB: Psychic Bolt · WASD: Move · V: Toggle View';
+  tipLabel.textContent = 'LMB: Psychic Bolt · WASD: Move · V: Toggle View · Q: Ping Wheel';
   panel.appendChild(tipLabel);
 
   const audio = createDamageAudio();
+
   const levelUpOverlay = document.createElement('div');
   levelUpOverlay.className = 'hud-levelup';
+  levelUpOverlay.style.pointerEvents = 'none';
   const levelUpTitle = document.createElement('div');
   levelUpTitle.className = 'hud-levelup-title';
   levelUpOverlay.appendChild(levelUpTitle);
@@ -78,11 +96,119 @@ export function createHud(parent: HTMLElement): Hud {
   toast.className = 'hud-toast';
   root.appendChild(toast);
 
+  const teamPanel = document.createElement('div');
+  teamPanel.className = 'hud-team';
+  root.appendChild(teamPanel);
+
+  const readyButton = document.createElement('button');
+  readyButton.type = 'button';
+  readyButton.className = 'hud-ready-toggle';
+  readyButton.textContent = 'Ready Up';
+  readyButton.disabled = true;
+  readyButton.setAttribute('aria-pressed', 'false');
+  teamPanel.appendChild(readyButton);
+
+  const rosterList = document.createElement('ul');
+  rosterList.className = 'hud-roster';
+  teamPanel.appendChild(rosterList);
+
+  const objectivesPanel = document.createElement('div');
+  objectivesPanel.className = 'hud-objectives';
+  teamPanel.appendChild(objectivesPanel);
+
+  const waveLabel = document.createElement('div');
+  waveLabel.className = 'hud-objective-wave';
+  objectivesPanel.appendChild(waveLabel);
+
+  const waveProgress = createBar('Wave Progress', 'hud-wave');
+  objectivesPanel.appendChild(waveProgress.container);
+
+  const bossLabel = document.createElement('div');
+  bossLabel.className = 'hud-objective-boss';
+  objectivesPanel.appendChild(bossLabel);
+
+  const extractionLabel = document.createElement('div');
+  extractionLabel.className = 'hud-objective-extraction';
+  objectivesPanel.appendChild(extractionLabel);
+
+  const killLabel = document.createElement('div');
+  killLabel.className = 'hud-objective-kills';
+  objectivesPanel.appendChild(killLabel);
+
+  const pingFeed = document.createElement('div');
+  pingFeed.className = 'hud-ping-feed';
+  root.appendChild(pingFeed);
+
+  const pingWheel = document.createElement('div');
+  pingWheel.className = 'hud-ping-wheel';
+  root.appendChild(pingWheel);
+
+  const PING_DESCRIPTORS: Array<{ kind: QuickPingKind; label: string; hint: string }> = [
+    { kind: 'assist', label: 'Assist', hint: '↑' },
+    { kind: 'objective', label: 'Objective', hint: '→' },
+    { kind: 'loot', label: 'Loot', hint: '↓' },
+    { kind: 'danger', label: 'Danger', hint: '←' }
+  ];
+
+  const PING_LABELS: Record<QuickPingKind, string> = {
+    assist: 'Assist',
+    danger: 'Danger',
+    loot: 'Loot',
+    objective: 'Objective'
+  };
+
+  type RosterRow = { element: HTMLLIElement; name: HTMLElement; meta: HTMLElement };
+
+  const pingOptions = {
+    assist: document.createElement('div'),
+    objective: document.createElement('div'),
+    loot: document.createElement('div'),
+    danger: document.createElement('div')
+  } as Record<QuickPingKind, HTMLDivElement>;
+
+  for (const descriptor of PING_DESCRIPTORS) {
+    const option = pingOptions[descriptor.kind];
+    option.className = `hud-ping-option hud-ping-${descriptor.kind}`;
+    option.innerHTML = `
+      <span class="hud-ping-label">${descriptor.label}</span>
+      <span class="hud-ping-hint">${descriptor.hint}</span>`;
+    pingWheel.appendChild(option);
+  }
+
   let lastHurtTimer = 0;
   let currentOffer: LevelUpUiOffer | null = null;
   let offerHandler: ((augmentId: AugmentId) => void) | null = null;
   let offerLocked = false;
   let toastTimer: number | null = null;
+  let readyState = false;
+  let pingActive = false;
+  let pingSelection: QuickPingKind | null = null;
+  const rosterDom = new Map<string, RosterRow>();
+  const pingTimeouts: number[] = [];
+
+  const applyReadyState = () => {
+    readyButton.classList.toggle('is-ready', readyState);
+    readyButton.textContent = readyState ? 'Ready' : 'Ready Up';
+    readyButton.setAttribute('aria-pressed', readyState ? 'true' : 'false');
+  };
+
+  const handleReadyClick = () => {
+    if (readyButton.disabled) {
+      return;
+    }
+    readyState = !readyState;
+    applyReadyState();
+    options.onReadyChange?.(readyState);
+  };
+
+  readyButton.addEventListener('click', handleReadyClick);
+
+  function clearRoster(): void {
+    for (const row of rosterDom.values()) {
+      row.element.remove();
+    }
+    rosterDom.clear();
+  }
 
   function update(snapshot: WorldSnapshot, playerId: string | null): void {
     if (!playerId) {
@@ -92,7 +218,16 @@ export function createHud(parent: HTMLElement): Hud {
       panel.classList.remove('is-hurt', 'is-invulnerable');
       lastHurtTimer = 0;
       augmentLabel.textContent = 'Augment: —';
+      readyState = false;
+      applyReadyState();
+      readyButton.disabled = true;
       clearLevelUp();
+      clearRoster();
+      waveLabel.textContent = 'Wave —';
+      updateBar(waveProgress, 0, 1, '0%');
+      bossLabel.textContent = 'Boss: —';
+      extractionLabel.textContent = 'Extraction: —';
+      killLabel.textContent = '';
       return;
     }
 
@@ -104,7 +239,16 @@ export function createHud(parent: HTMLElement): Hud {
       panel.classList.remove('is-hurt', 'is-invulnerable');
       lastHurtTimer = 0;
       augmentLabel.textContent = 'Augment: —';
+      readyState = false;
+      applyReadyState();
+      readyButton.disabled = true;
       clearLevelUp();
+      clearRoster();
+      waveLabel.textContent = 'Wave —';
+      updateBar(waveProgress, 0, 1, '0%');
+      bossLabel.textContent = 'Boss: —';
+      extractionLabel.textContent = 'Extraction: —';
+      killLabel.textContent = '';
       return;
     }
 
@@ -120,9 +264,9 @@ export function createHud(parent: HTMLElement): Hud {
       `${Math.round(player.experience)} / ${Math.round(player.experienceToNext)}`
     );
 
-    if (player.lastAugmentId) {
-      const augment = getAugmentOption(player.lastAugmentId);
-      augmentLabel.textContent = `Augment: ${augment.name}`;
+    const augmentId = player.lastAugmentId ?? (player.augments.length > 0 ? player.augments[player.augments.length - 1] : null);
+    if (augmentId) {
+      augmentLabel.textContent = `Augment: ${getAugmentOption(augmentId).name}`;
     } else {
       augmentLabel.textContent = 'Augment: —';
     }
@@ -138,8 +282,86 @@ export function createHud(parent: HTMLElement): Hud {
     }
     lastHurtTimer = hurtTimer;
 
+    readyState = player.ready;
+    applyReadyState();
+    readyButton.disabled = false;
+
+    updateRoster(snapshot.players, playerId);
+    renderObjectives(snapshot.objectives);
+
     const targeted = snapshot.enemies.some((enemy) => enemy.intent === 'windup' && enemy.targetPlayerId === playerId);
     warningLabel.classList.toggle('is-visible', targeted);
+  }
+
+  function updateRoster(players: WorldSnapshot['players'], localId: string): void {
+    const seen = new Set<string>();
+    const ordered = [...players].sort((a, b) => {
+      if (a.id === localId) {
+        return -1;
+      }
+      if (b.id === localId) {
+        return 1;
+      }
+      return a.displayName.localeCompare(b.displayName);
+    });
+
+    for (const entry of ordered) {
+      let row = rosterDom.get(entry.id);
+      if (!row) {
+        const element = document.createElement('li');
+        element.className = 'hud-roster-item';
+        const name = document.createElement('span');
+        name.className = 'hud-roster-name';
+        element.appendChild(name);
+        const meta = document.createElement('span');
+        meta.className = 'hud-roster-meta';
+        element.appendChild(meta);
+        rosterList.appendChild(element);
+        row = { element, name, meta };
+        rosterDom.set(entry.id, row);
+      }
+      row.name.textContent = entry.displayName;
+      const latestAugment = entry.lastAugmentId ?? (entry.augments.length > 0 ? entry.augments[entry.augments.length - 1] : null);
+      if (latestAugment) {
+        const augment = getAugmentOption(latestAugment);
+        const extra = entry.augments.length > 1 ? ` (+${entry.augments.length - 1})` : '';
+        row.meta.textContent = `Lv ${entry.psychicLevel} · ${augment.name}${extra}`;
+      } else {
+        row.meta.textContent = `Lv ${entry.psychicLevel}`;
+      }
+      row.element.classList.toggle('is-local', entry.id === localId);
+      row.element.classList.toggle('is-ready', entry.ready);
+      seen.add(entry.id);
+    }
+
+    for (const [id, row] of rosterDom.entries()) {
+      if (!seen.has(id)) {
+        row.element.remove();
+        rosterDom.delete(id);
+      }
+    }
+  }
+
+  function renderObjectives(objectives: WorldSnapshot['objectives']): void {
+    waveLabel.textContent = `Wave ${objectives.wave}`;
+    updateBar(waveProgress, objectives.waveProgress, 1, `${Math.round(objectives.waveProgress * 100)}%`);
+    killLabel.textContent = objectives.totalKills > 0 ? `Total Kills ${objectives.totalKills}` : '';
+
+    if (objectives.nextBossSeconds === null) {
+      bossLabel.textContent = 'Boss: Active';
+    } else {
+      bossLabel.textContent = `Boss in ${formatSeconds(objectives.nextBossSeconds)}`;
+    }
+
+    if (!objectives.extractionReady) {
+      extractionLabel.textContent = 'Extraction: Locked';
+    } else if (objectives.extractionCountdown === null) {
+      extractionLabel.textContent = 'Extraction: Awaiting Ready';
+    } else if (objectives.extractionCountdown > 0) {
+      extractionLabel.textContent = `Extraction: ${formatSeconds(objectives.extractionCountdown)}`;
+    } else {
+      extractionLabel.textContent = 'Extraction: Ready!';
+    }
   }
 
   function presentLevelUp(offer: LevelUpUiOffer, onSelect: (augmentId: AugmentId) => void): void {
@@ -164,7 +386,7 @@ export function createHud(parent: HTMLElement): Hud {
     });
     levelUpOverlay.classList.add('is-visible');
     levelUpOverlay.classList.remove('is-processing');
-    root.style.pointerEvents = 'auto';
+    levelUpOverlay.style.pointerEvents = 'auto';
   }
 
   function lockLevelUp(): void {
@@ -185,7 +407,7 @@ export function createHud(parent: HTMLElement): Hud {
     offerLocked = false;
     levelUpOverlay.classList.remove('is-visible', 'is-processing');
     levelUpOptions.replaceChildren();
-    root.style.pointerEvents = 'none';
+    levelUpOverlay.style.pointerEvents = 'none';
   }
 
   function chooseAugment(augmentId: AugmentId): void {
@@ -207,6 +429,32 @@ export function createHud(parent: HTMLElement): Hud {
     showToast('Miniboss inbound!', pretty, 'is-boss');
   }
 
+  function showPingAlert(message: QuickPingBroadcastMessage, isLocal: boolean): void {
+    const item = document.createElement('div');
+    item.className = `hud-ping-alert hud-ping-${message.kind}${isLocal ? ' is-local' : ''}`;
+    item.innerHTML = `
+      <span class="hud-ping-player">${isLocal ? 'You' : message.playerName}</span>
+      <span class="hud-ping-callout">${PING_LABELS[message.kind]}</span>`;
+    pingFeed.appendChild(item);
+
+    while (pingFeed.children.length > 3) {
+      const first = pingFeed.firstElementChild as HTMLElement | null;
+      if (!first) {
+        break;
+      }
+      if (first.dataset.timeoutId) {
+        window.clearTimeout(Number(first.dataset.timeoutId));
+      }
+      first.remove();
+    }
+
+    const timeout = window.setTimeout(() => {
+      item.remove();
+    }, 2400);
+    item.dataset.timeoutId = String(timeout);
+    pingTimeouts.push(timeout);
+  }
+
   function showToast(headline: string, subline: string, tone: string): void {
     toast.className = `hud-toast ${tone}`;
     toast.innerHTML = `
@@ -220,6 +468,71 @@ export function createHud(parent: HTMLElement): Hud {
       toast.classList.remove('is-visible');
       toastTimer = null;
     }, 2600);
+  }
+
+  function beginPingSelection(): void {
+    if (pingActive) {
+      return;
+    }
+    pingActive = true;
+    pingWheel.classList.add('is-active');
+    setPingSelection(null);
+  }
+
+  function updatePingCursor(clientX: number, clientY: number): void {
+    if (!pingActive) {
+      return;
+    }
+    const centerX = window.innerWidth / 2;
+    const centerY = window.innerHeight / 2;
+    const dx = clientX - centerX;
+    const dy = clientY - centerY;
+    if (Math.abs(dx) < 12 && Math.abs(dy) < 12) {
+      setPingSelection(null);
+      return;
+    }
+    if (Math.abs(dx) > Math.abs(dy)) {
+      setPingSelection(dx > 0 ? 'objective' : 'danger');
+    } else {
+      setPingSelection(dy > 0 ? 'loot' : 'assist');
+    }
+  }
+
+  function commitPingSelection(): QuickPingKind | null {
+    if (!pingActive) {
+      return null;
+    }
+    pingActive = false;
+    pingWheel.classList.remove('is-active');
+    const selection = pingSelection;
+    setPingSelection(null);
+    return selection;
+  }
+
+  function cancelPingSelection(): void {
+    if (!pingActive) {
+      return;
+    }
+    pingActive = false;
+    pingWheel.classList.remove('is-active');
+    setPingSelection(null);
+  }
+
+  function setPingSelection(kind: QuickPingKind | null): void {
+    pingSelection = kind;
+    (Object.entries(pingOptions) as Array<[QuickPingKind, HTMLDivElement]>).forEach(([key, element]) => {
+      element.classList.toggle('is-selected', key === kind);
+    });
+  }
+
+  function formatSeconds(value: number): string {
+    const clamped = Math.max(0, Math.round(value));
+    const minutes = Math.floor(clamped / 60);
+    const seconds = clamped % 60;
+    if (minutes > 0) {
+      return `${minutes}:${seconds.toString().padStart(2, '0')}`;
+    }
+    return `${seconds}s`;
   }
 
   function handleLevelUpKey(event: KeyboardEvent): void {
@@ -248,10 +561,15 @@ export function createHud(parent: HTMLElement): Hud {
 
   function dispose(): void {
     audio.dispose();
+    readyButton.removeEventListener('click', handleReadyClick);
     root.remove();
     window.removeEventListener('keydown', handleLevelUpKey);
     if (toastTimer !== null) {
       window.clearTimeout(toastTimer);
+      toastTimer = null;
+    }
+    for (const timeout of pingTimeouts) {
+      window.clearTimeout(timeout);
     }
   }
 
@@ -262,9 +580,15 @@ export function createHud(parent: HTMLElement): Hud {
     clearLevelUp,
     showAugmentToast,
     showBossSpawn,
+    showPingAlert,
+    beginPingSelection,
+    updatePingCursor,
+    commitPingSelection,
+    cancelPingSelection,
     dispose
   };
 }
+
 
 interface DamageAudio {
   trigger(intensity: number): void;

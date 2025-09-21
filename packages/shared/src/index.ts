@@ -1,6 +1,6 @@
 import type { LevelData } from './level';
 
-export const NETWORK_PROTOCOL_VERSION = 2;
+export const NETWORK_PROTOCOL_VERSION = 3;
 export const TICK_RATE = 60;
 export const MAX_PLAYERS = 4;
 
@@ -9,6 +9,7 @@ export type EnemyIntent = 'idle' | 'windup' | 'recover';
 
 export type ProjectileFaction = 'player' | 'enemy' | 'boss';
 export type AugmentId = 'mind-surge' | 'rapid-channel' | 'psy-shield' | 'bolt-split';
+export type QuickPingKind = 'assist' | 'danger' | 'loot' | 'objective';
 
 export interface AugmentDefinition {
   id: AugmentId;
@@ -64,6 +65,23 @@ export const PROJECTILE_COOLDOWN = 0.35; // seconds
 export interface PlayerSummary {
   id: string;
   displayName: string;
+}
+
+export interface RosterEntry extends PlayerSummary {
+  level: number;
+  ready: boolean;
+  lastAugmentId: AugmentId | null;
+  augmentCount: number;
+}
+
+export interface ObjectiveState {
+  wave: number;
+  waveProgress: number; // 0..1 progress toward next wave
+  totalKills: number;
+  nextBossSeconds: number | null;
+  extractionReady: boolean;
+  extractionCountdown: number | null;
+  extractionPosition: Vector2D | null;
 }
 
 export const ENEMY_XP_VALUES: Record<EnemyKind, number> = {
@@ -147,13 +165,30 @@ export interface PingMessage {
   time: number;
 }
 
+export interface SetReadyMessage {
+  type: 'set-ready';
+  ready: boolean;
+}
+
+export interface QuickPingMessage {
+  type: 'quick-ping';
+  kind: QuickPingKind;
+  position: Vector2D;
+}
+
 export interface ChooseAugmentMessage {
   type: 'choose-augment';
   offerId: string;
   augmentId: AugmentId;
 }
 
-export type ClientMessage = HelloMessage | InputMessage | PingMessage | ChooseAugmentMessage;
+export type ClientMessage =
+  | HelloMessage
+  | InputMessage
+  | PingMessage
+  | ChooseAugmentMessage
+  | SetReadyMessage
+  | QuickPingMessage;
 
 export interface WelcomeMessage {
   type: 'welcome';
@@ -161,6 +196,8 @@ export interface WelcomeMessage {
   tickRate: number;
   level: LevelData;
   players: PlayerSummary[];
+  roster: RosterEntry[];
+  objectives: ObjectiveState;
 }
 
 export interface SnapshotMessage {
@@ -171,6 +208,14 @@ export interface SnapshotMessage {
 export interface ServerPingMessage {
   type: 'pong';
   time: number;
+}
+
+export interface QuickPingBroadcastMessage {
+  type: 'ping-event';
+  playerId: string;
+  kind: QuickPingKind;
+  position: Vector2D;
+  playerName: string;
 }
 
 export interface LevelUpOfferMessage {
@@ -200,7 +245,8 @@ export type ServerMessage =
   | ServerPingMessage
   | LevelUpOfferMessage
   | AugmentAppliedMessage
-  | BossSpawnedMessage;
+  | BossSpawnedMessage
+  | QuickPingBroadcastMessage;
 
 export interface EnemyState {
   id: string;
@@ -239,6 +285,7 @@ export interface WorldSnapshot {
   enemies: EnemyState[];
   projectiles: ProjectileState[];
   xpDrops: XpDropState[];
+  objectives: ObjectiveState;
 }
 
 export interface PlayerState {
@@ -255,6 +302,8 @@ export interface PlayerState {
   hurtTimer: number;
   invulnerableTimer: number;
   lastAugmentId: AugmentId | null;
+  augments: AugmentId[];
+  ready: boolean;
 }
 
 export interface Vector2D {

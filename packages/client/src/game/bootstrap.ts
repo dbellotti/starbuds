@@ -1,8 +1,12 @@
 import {
   AdditiveBlending,
+  AmbientLight,
   BufferGeometry,
   CanvasTexture,
   Color,
+  ConeGeometry,
+  CylinderGeometry,
+  DirectionalLight,
   Float32BufferAttribute,
   Group,
   InstancedMesh,
@@ -12,12 +16,17 @@ import {
   Matrix4,
   Mesh,
   MeshBasicMaterial,
+  MeshStandardMaterial,
   NearestFilter,
   OrthographicCamera,
   PlaneGeometry,
   Points,
   PointsMaterial,
   Scene,
+  ShaderMaterial,
+  Quaternion,
+  SphereGeometry,
+  Uniform,
   Vector2,
   Vector3,
   WebGLRenderer
@@ -29,7 +38,8 @@ import type {
   PlayerState,
   ProjectileFaction,
   WorldSnapshot,
-  LevelUpOfferMessage
+  LevelUpOfferMessage,
+  QuickPingKind
 } from '@farsight/shared';
 import { PLAYER_HURT_FLASH_TIME, PROJECTILE_LIFETIME, TILE_SIZE, TICK_RATE } from '@farsight/shared';
 import { InputController } from './input';
@@ -58,6 +68,13 @@ const PROJECTILE_STYLE: Record<ProjectileFaction, { body: number; trail: number;
   enemy: { body: 0xf87171, trail: 0xfca5a5, impact: 0xfca5a5 },
   boss: { body: 0xc084fc, trail: 0xa855f7, impact: 0xe879f9 }
 };
+const PING_COLORS: Record<QuickPingKind, number> = {
+  assist: 0x38bdf8,
+  danger: 0xf87171,
+  loot: 0x22c55e,
+  objective: 0xfacc15
+};
+const XP_ORB_TIME = new Uniform(0);
 
 export async function bootstrapGame(): Promise<void> {
   const mountNode = ensureMountNode();
@@ -65,14 +82,26 @@ export async function bootstrapGame(): Promise<void> {
   renderer.setClearColor(new Color(0x0a1019));
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
   mountNode.appendChild(renderer.domElement);
+  XP_ORB_TIME.value = performance.now() * 0.001;
 
   const scene = new Scene();
   const camera = createCamera(new Vector2(window.innerWidth, window.innerHeight));
   const worldRenderer = new WorldRenderer(scene);
-  const hud = createHud(mountNode);
+  const network = new GameNetwork();
+  const hud = createHud(mountNode, {
+    onReadyChange: (ready) => {
+      network.setReady(ready);
+    }
+  });
   const debug = createDebugOverlay(mountNode);
   const audio = createAudioController();
   debug.updateCameraMode('Top');
+
+  const ambientLight = new AmbientLight(0x1b2536, 0.58);
+  const keyLight = new DirectionalLight(0xfef9c3, 0.78);
+  keyLight.position.set(160, 340, 180);
+  scene.add(ambientLight);
+  scene.add(keyLight);
 
   const unlockAudio = () => {
     audio.prime();
@@ -85,6 +114,8 @@ export async function bootstrapGame(): Promise<void> {
   handleResize(renderer, camera);
 
   const pointerWorld = new Vector2();
+  let pointerClientX = window.innerWidth / 2;
+  let pointerClientY = window.innerHeight / 2;
   let inputInterval: number | null = null;
   let serverTickRate = TICK_RATE;
   let lastSnapshotTick = 0;
@@ -98,6 +129,8 @@ export async function bootstrapGame(): Promise<void> {
   let detachLevelUp: (() => void) | null = null;
   let detachAugment: (() => void) | null = null;
   let detachBoss: (() => void) | null = null;
+  let pingHeld = false;
+
   const inputController = new InputController(() => {
     const local = worldRenderer.getLocalPlayerPosition();
     if (!local) {
@@ -107,17 +140,52 @@ export async function bootstrapGame(): Promise<void> {
   });
 
   window.addEventListener('pointermove', (event) => {
+    pointerClientX = event.clientX;
+    pointerClientY = event.clientY;
     updatePointerWorld(event, renderer, camera, pointerWorld);
+    if (pingHeld) {
+      hud.updatePingCursor(pointerClientX, pointerClientY);
+    }
   });
   window.addEventListener('contextmenu', (event) => event.preventDefault());
   window.addEventListener('keydown', (event) => {
+    if (event.code === 'KeyQ' && !event.repeat) {
+      pingHeld = true;
+      hud.beginPingSelection();
+      hud.updatePingCursor(pointerClientX, pointerClientY);
+      event.preventDefault();
+      return;
+    }
     if (event.code === 'KeyV' && !event.repeat) {
       cameraMode = cameraMode === 'top' ? 'tilt' : 'top';
       debug.updateCameraMode(cameraMode === 'top' ? 'Top' : 'Tilt');
     }
   });
 
-  const network = new GameNetwork();
+  window.addEventListener('keyup', (event) => {
+    if (event.code === 'KeyQ' && pingHeld) {
+      pingHeld = false;
+      const selection = hud.commitPingSelection();
+      if (selection) {
+        network.sendQuickPing(selection, { x: pointerWorld.x, y: pointerWorld.y });
+      } else {
+        hud.cancelPingSelection();
+      }
+      event.preventDefault();
+    }
+    if (event.code === 'Escape' && pingHeld) {
+      pingHeld = false;
+      hud.cancelPingSelection();
+      event.preventDefault();
+    }
+  });
+
+  window.addEventListener('blur', () => {
+    if (pingHeld) {
+      pingHeld = false;
+      hud.cancelPingSelection();
+    }
+  });
   const presentNextOffer = (): boolean => {
     if (awaitingAugment || activeLevelUp || levelUpQueue.length === 0) {
       return false;
@@ -142,6 +210,11 @@ export async function bootstrapGame(): Promise<void> {
   };
   const detachPing = network.onPing((latency) => {
     debug.updateNetworkStats({ pingMs: latency });
+  });
+  const detachQuickPing = network.onPingEvent((message) => {
+    const isLocal = message.playerId === network.getPlayerId();
+    hud.showPingAlert(message, isLocal);
+    worldRenderer.spawnPing(message.position.x, message.position.y, message.kind, isLocal);
   });
   network.onSnapshot((snapshot) => {
     const now = performance.now();
@@ -196,9 +269,11 @@ export async function bootstrapGame(): Promise<void> {
     activeLevelUp = null;
     awaitingAugment = false;
     hud.clearLevelUp();
+    hud.cancelPingSelection();
     detachLevelUp?.();
     detachAugment?.();
     detachBoss?.();
+    detachQuickPing();
     detachLevelUp = null;
     detachAugment = null;
     detachBoss = null;
@@ -221,6 +296,7 @@ export async function bootstrapGame(): Promise<void> {
     detachLevelUp?.();
     detachAugment?.();
     detachBoss?.();
+    detachQuickPing();
     inputController.dispose();
     network.dispose();
     hud.dispose();
@@ -278,7 +354,16 @@ const emptySnapshot: WorldSnapshot = {
   players: [],
   enemies: [],
   projectiles: [],
-  xpDrops: []
+  xpDrops: [],
+  objectives: {
+    wave: 0,
+    waveProgress: 0,
+    totalKills: 0,
+    nextBossSeconds: null,
+    extractionReady: false,
+    extractionCountdown: null,
+    extractionPosition: null
+  }
 };
 
 function ensureMountNode(): HTMLElement {
@@ -366,6 +451,15 @@ function followCamera(
   camera.position.x = MathUtils.lerp(camera.position.x, desiredX, smooth);
   camera.position.y = MathUtils.lerp(camera.position.y, desiredY, smooth);
   camera.position.z = MathUtils.lerp(camera.position.z, desiredZ, smooth);
+
+  const hurt = world.getLocalHurtIntensity();
+  if (hurt > 0.01) {
+    const magnitude = 6 * hurt;
+    const time = performance.now() * 0.001;
+    camera.position.x += Math.sin(time * 42) * magnitude;
+    camera.position.z += Math.cos(time * 36) * magnitude;
+  }
+
   camera.lookAt(target.x, 0, target.y);
 }
 
@@ -520,6 +614,7 @@ class WorldRenderer {
   }
 
   update(deltaSeconds: number): void {
+    XP_ORB_TIME.value = performance.now() * 0.001;
     this.decor.update(deltaSeconds);
     for (const avatar of this.players.values()) {
       avatar.update(deltaSeconds);
@@ -536,6 +631,17 @@ class WorldRenderer {
     this.impactSystem.update(deltaSeconds);
   }
 
+  spawnPing(x: number, y: number, kind: QuickPingKind, isLocal: boolean): void {
+    const color = PING_COLORS[kind] ?? 0xffffff;
+    let tint = color;
+    if (!isLocal) {
+      const adjusted = new Color(color);
+      adjusted.lerp(new Color(0xffffff), 0.35);
+      tint = adjusted.getHex();
+    }
+    this.impactSystem.spawn(x, y, tint);
+  }
+
   getLocalPlayerPosition(): Vector2 | null {
     if (!this.localPlayerId) {
       return null;
@@ -545,6 +651,17 @@ class WorldRenderer {
       return null;
     }
     return avatar.getPosition();
+  }
+
+  getLocalHurtIntensity(): number {
+    if (!this.localPlayerId) {
+      return 0;
+    }
+    const avatar = this.players.get(this.localPlayerId);
+    if (!avatar) {
+      return 0;
+    }
+    return avatar.getHurtIntensity();
   }
 
   private clearTransients(): void {
@@ -574,6 +691,7 @@ class DecorRenderer {
   private backdrop: Mesh | null = null;
   private spawnGlow: Mesh | null = null;
   private particles: Points | null = null;
+  private props: InstancedMesh[] = [];
   private time = 0;
 
   applyLevel(level: LevelData): void {
@@ -626,6 +744,8 @@ class DecorRenderer {
     this.particles = new Points(particleGeometry, particleMaterial);
     this.group.add(this.particles);
 
+    this.createBiomeProps(level);
+
     this.time = 0;
   }
 
@@ -669,6 +789,62 @@ class DecorRenderer {
       (this.particles.material as PointsMaterial).dispose();
       this.particles = null;
     }
+    for (const mesh of this.props) {
+      this.group.remove(mesh);
+      mesh.geometry.dispose();
+      const mat = mesh.material;
+      if (Array.isArray(mat)) {
+        mat.forEach((entry) => disposeMaterial(entry));
+      } else {
+        disposeMaterial(mat);
+      }
+      mesh.dispose();
+    }
+    this.props = [];
+  }
+
+  private createBiomeProps(level: LevelData): void {
+    const positions: Array<{ x: number; y: number }> = [];
+    for (let y = 0; y < level.height; y += 1) {
+      for (let x = 0; x < level.width; x += 1) {
+        const tile = level.tiles[y * level.width + x];
+        if (tile === 'floor') {
+          positions.push({ x, y });
+        }
+      }
+    }
+    if (positions.length === 0) {
+      return;
+    }
+
+    const rng = mulberry32(level.seed ^ 0x4c957f2d);
+    const count = Math.min(140, Math.max(20, Math.floor(positions.length * 0.12)));
+
+    const { geometry, material } = createBiomePropAssets(level.biome);
+    const mesh = new InstancedMesh(geometry, material, count);
+    const matrix = new Matrix4();
+    const position = new Vector3();
+    const quaternion = new Quaternion();
+    const scaleVec = new Vector3();
+    const axis = new Vector3(0, 1, 0);
+
+    for (let i = 0; i < count; i += 1) {
+      const sample = positions[Math.floor(rng() * positions.length)];
+      const worldX = tileToWorldX(sample.x, level) + (rng() - 0.5) * TILE_SIZE * 0.6;
+      const worldZ = tileToWorldZ(sample.y, level) + (rng() - 0.5) * TILE_SIZE * 0.6;
+      const rotation = rng() * Math.PI * 2;
+      const scale = 0.7 + rng() * 0.6;
+      position.set(worldX, 0, worldZ);
+      quaternion.setFromAxisAngle(axis, rotation);
+      scaleVec.set(scale, scale, scale);
+      matrix.compose(position, quaternion, scaleVec);
+      mesh.setMatrixAt(i, matrix);
+    }
+    mesh.instanceMatrix.needsUpdate = true;
+    mesh.castShadow = false;
+    mesh.receiveShadow = false;
+    this.props.push(mesh);
+    this.group.add(mesh);
   }
 }
 
@@ -688,9 +864,10 @@ class LevelRenderer {
     const floorGeometry = createTileGeometry();
     const wallGeometry = createTileGeometry();
 
-    const floorMaterial = new MeshBasicMaterial({ color: 0x1f2937, transparent: true, opacity: 0.92 });
-    const spawnMaterial = new MeshBasicMaterial({ color: 0x334155, transparent: true, opacity: 0.95 });
-    const wallMaterial = new MeshBasicMaterial({ color: 0x0b1120, transparent: true, opacity: 0.88 });
+    const materials = createBiomeMaterials(level.biome, level.seed);
+    const floorMaterial = materials.floor;
+    const spawnMaterial = materials.spawn;
+    const wallMaterial = materials.wall;
 
     const floorMesh = new InstancedMesh(floorGeometry, floorMaterial, Math.max(1, counts.floor + counts.spawn));
     let spawnMesh: InstancedMesh | null = null;
@@ -762,9 +939,9 @@ class LevelRenderer {
       this.group.remove(mesh);
       mesh.geometry.dispose();
       if (Array.isArray(mesh.material)) {
-        mesh.material.forEach((material) => material.dispose());
+        mesh.material.forEach((material) => disposeMaterial(material));
       } else {
-        mesh.material.dispose();
+        disposeMaterial(mesh.material);
       }
       mesh.dispose();
     }
@@ -772,11 +949,19 @@ class LevelRenderer {
   }
 }
 
+function disposeMaterial(material: { dispose: () => void; map?: { dispose: () => void } | null }): void {
+  if ('map' in material && material.map) {
+    material.map.dispose();
+  }
+  material.dispose();
+}
+
 class PlayerAvatar {
   readonly mesh: Group;
   readonly id: string;
   private readonly body: Mesh;
   private readonly material: MeshBasicMaterial;
+  private readonly lowPoly: Group;
   private readonly currentPosition = new Vector2();
   private readonly targetPosition = new Vector2();
   private readonly baseColor = new Color();
@@ -814,6 +999,10 @@ class PlayerAvatar {
     this.body.position.y = PLAYER_HEIGHT;
     this.body.renderOrder = 4;
     this.mesh.add(this.body);
+
+    this.lowPoly = createChickenModel(pickColor(id, isLocal));
+    this.lowPoly.position.y = PLAYER_HEIGHT * 0.6;
+    this.mesh.add(this.lowPoly);
 
     const reticleGeometry = new PlaneGeometry(1, 1);
     reticleGeometry.rotateX(-Math.PI / 2);
@@ -854,6 +1043,7 @@ class PlayerAvatar {
     this.isLocal = isLocal;
     this.baseColor.setHex(pickColor(this.id, isLocal));
     this.material.color.copy(this.baseColor);
+    applyChickenTint(this.lowPoly, this.baseColor.getHex());
   }
 
   setTargeted(value: boolean): void {
@@ -905,6 +1095,10 @@ class PlayerAvatar {
   getPosition(): Vector2 {
     return this.currentPosition.clone();
   }
+
+  getHurtIntensity(): number {
+    return PLAYER_HURT_FLASH_TIME > 0 ? Math.min(1, this.hurtTimer / PLAYER_HURT_FLASH_TIME) : 0;
+  }
 }
 
 class EnemyAvatar {
@@ -914,6 +1108,7 @@ class EnemyAvatar {
   private readonly material: MeshBasicMaterial;
   private readonly telegraph: Mesh;
   private readonly telegraphMaterial: MeshBasicMaterial;
+  private model: Group | null = null;
   private readonly currentPosition = new Vector2();
   private readonly targetPosition = new Vector2();
   private currentFacing = 0;
@@ -981,6 +1176,15 @@ class EnemyAvatar {
     this.body.scale.setScalar(scale);
     this.telegraphMaterial.opacity = 0;
     this.telegraphMaterial.color.setHex(kind === 'coyote' ? 0xf59e0b : 0xffffff);
+
+    if (this.model) {
+      this.mesh.remove(this.model);
+      disposeModel(this.model);
+      this.model = null;
+    }
+    this.model = createEnemyModel(kind);
+    this.model.position.y = kind === 'coyote' ? 14 : 9;
+    this.mesh.add(this.model);
   }
 
   getKind(): EnemyKind {
@@ -995,6 +1199,11 @@ class EnemyAvatar {
     this.telegraph.visible = false;
     this.initialized = false;
     this.intent = 'idle';
+    if (this.model) {
+      this.mesh.remove(this.model);
+      disposeModel(this.model);
+      this.model = null;
+    }
   }
 
   setState(state: EnemyState): void {
@@ -1290,24 +1499,18 @@ class XpOrb {
   readonly id: string;
   private readonly currentPosition = new Vector2();
   private readonly targetPosition = new Vector2();
-  private readonly material: MeshBasicMaterial;
-  private displayAge = 0;
+  private readonly material: ShaderMaterial;
   private baseAmount = 0;
+  private spawnTime = 0;
   private initialized = false;
 
   constructor(id: string, parent: Group) {
     this.id = id;
-    const geometry = new PlaneGeometry(16, 16);
-    geometry.rotateX(-Math.PI / 2);
-    this.material = new MeshBasicMaterial({
-      color: 0xfde68a,
-      transparent: true,
-      opacity: 0.6,
-      blending: AdditiveBlending,
-      depthWrite: false
-    });
+    const geometry = new PlaneGeometry(18, 18);
+    this.material = createXpOrbMaterial();
     this.mesh = new Mesh(geometry, this.material);
     this.mesh.renderOrder = 1;
+    this.mesh.frustumCulled = false;
     parent.add(this.mesh);
   }
 
@@ -1318,27 +1521,20 @@ class XpOrb {
       this.initialized = true;
     }
     this.baseAmount = amount;
-    this.displayAge = age;
+    this.spawnTime = XP_ORB_TIME.value - age;
+    this.material.uniforms.uSpawnTime.value = this.spawnTime;
+    this.material.uniforms.uAmount.value = amount;
   }
 
   update(deltaSeconds: number): void {
     const lerpFactor = Math.min(1, deltaSeconds * 6);
     this.currentPosition.lerp(this.targetPosition, lerpFactor);
-    this.displayAge += deltaSeconds;
-
-    const bob = Math.sin(this.displayAge * 3.4) * 4 + 5;
-    const scaleBase = 0.7 + Math.min(this.baseAmount / 30, 1) * 0.5;
-    const scalePulse = scaleBase + Math.sin(this.displayAge * 6) * 0.1;
-    this.mesh.position.set(this.currentPosition.x, bob, this.currentPosition.y);
-    this.mesh.scale.set(scalePulse, scalePulse, scalePulse);
-
-    this.material.opacity = 0.45 + Math.sin(this.displayAge * 5.5) * 0.12;
-    this.material.color.setHex(this.baseAmount >= 18 ? 0xfacc15 : 0xfde68a);
+    this.mesh.position.set(this.currentPosition.x, 0, this.currentPosition.y);
   }
 
   dispose(): void {
     this.mesh.geometry.dispose();
-    this.material.dispose();
+    disposeMaterial(this.material);
   }
 }
 
@@ -1439,6 +1635,420 @@ function createEnemyTexture(baseColor: string, highlightColor: string): CanvasTe
   texture.minFilter = NearestFilter;
   texture.needsUpdate = true;
   return texture;
+}
+
+function createBiomeMaterials(biome: LevelData['biome'], seed: number): {
+  floor: MeshStandardMaterial;
+  spawn: MeshStandardMaterial;
+  wall: MeshStandardMaterial;
+} {
+  const rng = mulberry32(seed ^ 0x9e3779b9);
+
+  const floorTexture = createFloorTexture(biome, rng);
+  const spawnTexture = createSpawnTexture(biome, rng);
+  const wallTexture = createWallTexture(biome, rng);
+
+  const floorMaterial = new MeshStandardMaterial({
+    map: floorTexture,
+    color: 0xffffff,
+    metalness: 0.08,
+    roughness: 0.78,
+    transparent: true
+  });
+  const spawnMaterial = new MeshStandardMaterial({
+    map: spawnTexture,
+    color: 0xffffff,
+    metalness: 0.05,
+    roughness: 0.7,
+    transparent: true
+  });
+  const wallMaterial = new MeshStandardMaterial({
+    map: wallTexture,
+    color: 0xffffff,
+    metalness: 0.2,
+    roughness: 0.55,
+    transparent: true
+  });
+
+  return { floor: floorMaterial, spawn: spawnMaterial, wall: wallMaterial };
+}
+
+function createFloorTexture(biome: LevelData['biome'], rng: () => number): CanvasTexture {
+  const canvas = document.createElement('canvas');
+  canvas.width = 128;
+  canvas.height = 128;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) {
+    throw new Error('Failed to create floor texture context');
+  }
+  ctx.imageSmoothingEnabled = false;
+
+  const palette = getBiomePalette(biome);
+  ctx.fillStyle = palette.floorBase;
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+  const strokes = 220;
+  for (let i = 0; i < strokes; i += 1) {
+    const x = Math.floor(rng() * canvas.width);
+    const y = Math.floor(rng() * canvas.height);
+    const length = rng() * 12 + 4;
+    const angle = rng() * Math.PI * 2;
+    ctx.strokeStyle = rng() > 0.5 ? palette.floorAccent : palette.floorSecondary;
+    ctx.globalAlpha = 0.18 + rng() * 0.12;
+    ctx.lineWidth = 2 + rng() * 1.5;
+    ctx.beginPath();
+    ctx.moveTo(x, y);
+    ctx.lineTo(x + Math.cos(angle) * length, y + Math.sin(angle) * length);
+    ctx.stroke();
+  }
+  ctx.globalAlpha = 1;
+
+  const texture = new CanvasTexture(canvas);
+  texture.magFilter = NearestFilter;
+  texture.minFilter = NearestFilter;
+  texture.needsUpdate = true;
+  return texture;
+}
+
+function createBiomePropAssets(biome: LevelData['biome']): {
+  geometry: BufferGeometry;
+  material: MeshStandardMaterial;
+} {
+  switch (biome) {
+    case 'barnyard': {
+      const geometry = new CylinderGeometry(6, 8, 18, 8, 1, false);
+      const material = new MeshStandardMaterial({
+        color: 0xf9a825,
+        emissive: 0x331c04,
+        roughness: 0.7,
+        metalness: 0.05
+      });
+      return { geometry, material };
+    }
+    case 'forest': {
+      const geometry = new ConeGeometry(8, 24, 8, 1);
+      const material = new MeshStandardMaterial({
+        color: 0x16a34a,
+        emissive: 0x0f5130,
+        roughness: 0.6,
+        metalness: 0.1
+      });
+      return { geometry, material };
+    }
+    case 'lab':
+    default: {
+      const geometry = new CylinderGeometry(3.5, 3.5, 26, 10, 1, false);
+      const material = new MeshStandardMaterial({
+        color: 0x60a5fa,
+        emissive: 0x0f172a,
+        emissiveIntensity: 0.35,
+        roughness: 0.3,
+        metalness: 0.45
+      });
+      return { geometry, material };
+    }
+  }
+}
+
+function createXpOrbMaterial(): ShaderMaterial {
+  return new ShaderMaterial({
+    uniforms: {
+      uTime: XP_ORB_TIME,
+      uSpawnTime: { value: 0 },
+      uAmount: { value: 0 }
+    },
+    transparent: true,
+    blending: AdditiveBlending,
+    depthWrite: false,
+    vertexShader: `
+      uniform float uTime;
+      uniform float uSpawnTime;
+      uniform float uAmount;
+      varying float vAmount;
+      varying vec2 vUv;
+
+      void main() {
+        vUv = uv;
+        float age = max(0.0, uTime - uSpawnTime);
+        float bob = sin(age * 3.4) * 4.0 + 5.0;
+        float scaleBase = 0.7 + min(uAmount / 30.0, 1.0) * 0.5;
+        float scalePulse = scaleBase + sin(age * 6.0) * 0.1;
+
+        vec3 worldPosition = (modelMatrix * vec4(0.0, 0.0, 0.0, 1.0)).xyz;
+        vec3 right = vec3(modelViewMatrix[0][0], modelViewMatrix[1][0], modelViewMatrix[2][0]);
+        vec3 up = vec3(modelViewMatrix[0][1], modelViewMatrix[1][1], modelViewMatrix[2][1]);
+        vec3 offset = (right * (position.x) + up * (position.y)) * scalePulse;
+        vec3 billboardPos = worldPosition + offset + vec3(0.0, bob, 0.0);
+
+        vAmount = uAmount;
+        gl_Position = projectionMatrix * viewMatrix * vec4(billboardPos, 1.0);
+      }
+    `,
+    fragmentShader: `
+      varying float vAmount;
+      varying vec2 vUv;
+
+      void main() {
+        vec2 centered = vUv - 0.5;
+        float dist = length(centered);
+        float strength = clamp(vAmount / 18.0, 0.0, 1.0);
+        vec3 innerColor = mix(vec3(0.99, 0.92, 0.64), vec3(1.0, 0.84, 0.35), strength);
+        float alpha = smoothstep(0.55, 0.08, dist);
+        if (alpha <= 0.01) {
+          discard;
+        }
+        gl_FragColor = vec4(innerColor, alpha * (0.75 + strength * 0.2));
+      }
+    `
+  });
+}
+
+function createSpawnTexture(biome: LevelData['biome'], rng: () => number): CanvasTexture {
+  const texture = createFloorTexture(biome, rng);
+  const canvas = texture.image as HTMLCanvasElement;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) {
+    return texture;
+  }
+  const palette = getBiomePalette(biome);
+  const centerX = canvas.width / 2;
+  const centerY = canvas.height / 2;
+  const radius = canvas.width * 0.32;
+  const gradient = ctx.createRadialGradient(centerX, centerY, radius * 0.2, centerX, centerY, radius);
+  gradient.addColorStop(0, palette.spawnGlow);
+  gradient.addColorStop(1, 'rgba(15, 23, 42, 0)');
+  ctx.globalCompositeOperation = 'lighter';
+  ctx.fillStyle = gradient;
+  ctx.beginPath();
+  ctx.arc(centerX, centerY, radius, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.globalCompositeOperation = 'source-over';
+  texture.needsUpdate = true;
+  return texture;
+}
+
+function createWallTexture(biome: LevelData['biome'], rng: () => number): CanvasTexture {
+  const canvas = document.createElement('canvas');
+  canvas.width = 64;
+  canvas.height = 128;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) {
+    throw new Error('Failed to create wall texture context');
+  }
+  ctx.imageSmoothingEnabled = false;
+  const palette = getBiomePalette(biome);
+  ctx.fillStyle = palette.wallBase;
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+  const bands = 6;
+  for (let i = 0; i < bands; i += 1) {
+    const y = (canvas.height / bands) * i;
+    ctx.fillStyle = palette.wallAccent;
+    ctx.globalAlpha = 0.25 + rng() * 0.15;
+    ctx.fillRect(0, y, canvas.width, 6);
+  }
+  ctx.globalAlpha = 1;
+
+  const texture = new CanvasTexture(canvas);
+  texture.magFilter = NearestFilter;
+  texture.minFilter = NearestFilter;
+  texture.needsUpdate = true;
+  return texture;
+}
+
+function getBiomePalette(biome: LevelData['biome']): {
+  floorBase: string;
+  floorAccent: string;
+  floorSecondary: string;
+  spawnGlow: string;
+  wallBase: string;
+  wallAccent: string;
+} {
+  switch (biome) {
+    case 'barnyard':
+      return {
+        floorBase: '#33261a',
+        floorAccent: '#d9a066',
+        floorSecondary: 'rgba(244, 187, 120, 0.8)',
+        spawnGlow: 'rgba(255, 196, 125, 0.55)',
+        wallBase: '#3a2d1c',
+        wallAccent: 'rgba(234, 179, 85, 0.6)'
+      };
+    case 'forest':
+      return {
+        floorBase: '#1f3520',
+        floorAccent: '#6ee7b7',
+        floorSecondary: 'rgba(167, 243, 208, 0.8)',
+        spawnGlow: 'rgba(74, 222, 128, 0.55)',
+        wallBase: '#1d2b21',
+        wallAccent: 'rgba(94, 234, 212, 0.6)'
+      };
+    case 'lab':
+    default:
+      return {
+        floorBase: '#1a2433',
+        floorAccent: '#60a5fa',
+        floorSecondary: 'rgba(96, 165, 250, 0.8)',
+        spawnGlow: 'rgba(96, 165, 250, 0.55)',
+        wallBase: '#161f2c',
+        wallAccent: 'rgba(165, 180, 252, 0.55)'
+      };
+  }
+}
+
+function mulberry32(seed: number): () => number {
+  let a = seed >>> 0;
+  return () => {
+    a += 0x6d2b79f5;
+    let t = a;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+function createChickenModel(primaryColor: number): Group {
+  const group = new Group();
+
+  const bodyMaterial = new MeshStandardMaterial({
+    color: primaryColor,
+    roughness: 0.55,
+    metalness: 0.12
+  });
+  const body = new Mesh(new SphereGeometry(7.2, 12, 12), bodyMaterial);
+  body.position.y = 6;
+  body.userData.tint = true;
+  group.add(body);
+
+  const tailMaterial = bodyMaterial.clone();
+  const tail = new Mesh(new ConeGeometry(3.2, 6, 6, 1), tailMaterial);
+  tail.rotation.x = -Math.PI / 2;
+  tail.position.set(0, 4.5, -6.5);
+  tail.userData.tint = true;
+  group.add(tail);
+
+  const wingMaterial = bodyMaterial.clone();
+  const wingGeometry = new ConeGeometry(2.8, 5.4, 5, 1);
+  const leftWing = new Mesh(wingGeometry, wingMaterial);
+  leftWing.rotation.z = Math.PI / 2.2;
+  leftWing.position.set(5, 5.5, 0);
+  leftWing.userData.tint = true;
+  group.add(leftWing);
+  const rightWing = leftWing.clone();
+  rightWing.position.x = -5;
+  rightWing.rotation.z = -Math.PI / 2.2;
+  group.add(rightWing);
+
+  const headMaterial = new MeshStandardMaterial({
+    color: 0xfff4d2,
+    roughness: 0.45,
+    metalness: 0.05
+  });
+  const head = new Mesh(new SphereGeometry(4.2, 10, 10), headMaterial);
+  head.position.set(0, 9.5, 4.5);
+  group.add(head);
+
+  const beakMaterial = new MeshStandardMaterial({
+    color: 0xf97316,
+    roughness: 0.4,
+    metalness: 0.1
+  });
+  const beak = new Mesh(new ConeGeometry(1.8, 3.8, 6, 1), beakMaterial);
+  beak.rotation.x = Math.PI / 2;
+  beak.position.set(0, 8.8, 8.2);
+  group.add(beak);
+
+  const crestMaterial = new MeshStandardMaterial({
+    color: 0xf87171,
+    roughness: 0.5,
+    metalness: 0.05
+  });
+  const crest = new Mesh(new SphereGeometry(1.6, 6, 6), crestMaterial);
+  crest.position.set(0, 11.2, 4.2);
+  group.add(crest);
+
+  const eyeMaterial = new MeshStandardMaterial({ color: 0x0f172a, roughness: 0.4, metalness: 0.3 });
+  const eyeGeometry = new SphereGeometry(0.8, 6, 6);
+  const leftEye = new Mesh(eyeGeometry, eyeMaterial);
+  leftEye.position.set(1.4, 9.4, 6.8);
+  group.add(leftEye);
+  const rightEye = leftEye.clone();
+  rightEye.position.x = -1.4;
+  group.add(rightEye);
+
+  group.scale.setScalar(0.85);
+  return group;
+}
+
+function applyChickenTint(model: Group, color: number): void {
+  model.traverse((child) => {
+    if (child instanceof Mesh && child.userData.tint) {
+      const mat = child.material as MeshStandardMaterial;
+      mat.color.setHex(color);
+    }
+  });
+}
+
+function createEnemyModel(kind: EnemyKind): Group {
+  const group = new Group();
+  const baseColor = ENEMY_COLORS[kind];
+  const highlight: Record<EnemyKind, number> = {
+    fox: 0xfbbf24,
+    hawk: 0x93c5fd,
+    snake: 0x4ade80,
+    raccoon: 0xe2e8f0,
+    coyote: 0xfacc15
+  };
+
+  const bodyMaterial = new MeshStandardMaterial({
+    color: baseColor,
+    roughness: 0.6,
+    metalness: 0.08
+  });
+  const body = new Mesh(new SphereGeometry(kind === 'coyote' ? 9 : 7, 12, 12), bodyMaterial);
+  body.position.y = kind === 'coyote' ? 8 : 6;
+  group.add(body);
+
+  const accentMaterial = new MeshStandardMaterial({
+    color: highlight[kind],
+    roughness: 0.5,
+    metalness: 0.12
+  });
+  const crest = new Mesh(new ConeGeometry(kind === 'coyote' ? 4 : 3, kind === 'coyote' ? 8 : 6, 6, 1), accentMaterial);
+  crest.rotation.x = Math.PI;
+  crest.position.set(0, body.position.y + (kind === 'coyote' ? 6 : 4), 0);
+  group.add(crest);
+
+  const snout = new Mesh(new ConeGeometry(kind === 'coyote' ? 3 : 2.4, kind === 'coyote' ? 6 : 4.5, 6, 1), accentMaterial.clone());
+  snout.rotation.x = Math.PI / 2;
+  snout.position.set(0, body.position.y - 0.5, 6 + (kind === 'coyote' ? 2 : 1));
+  group.add(snout);
+
+  const eyeMaterial = new MeshStandardMaterial({ color: 0x0f172a, roughness: 0.4 });
+  const eyeGeometry = new SphereGeometry(0.9, 6, 6);
+  const leftEye = new Mesh(eyeGeometry, eyeMaterial);
+  leftEye.position.set(2.2, body.position.y + 1.4, 5.4);
+  group.add(leftEye);
+  const rightEye = leftEye.clone();
+  rightEye.position.x = -2.2;
+  group.add(rightEye);
+
+  group.scale.setScalar(kind === 'coyote' ? 1.2 : 0.9);
+  return group;
+}
+
+function disposeModel(group: Group): void {
+  group.traverse((child) => {
+    if (child instanceof Mesh) {
+      const mesh = child as Mesh;
+      if (Array.isArray(mesh.material)) {
+        mesh.material.forEach((material) => disposeMaterial(material));
+      } else {
+        disposeMaterial(mesh.material);
+      }
+      mesh.geometry.dispose();
+    }
+  });
 }
 
 function createRadialTexture(inner: string, mid: string, outer: string): CanvasTexture {

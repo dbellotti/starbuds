@@ -2,6 +2,8 @@ export const TILE_SIZE = 32;
 
 export type LevelTile = 'wall' | 'floor' | 'spawn';
 
+export type Biome = 'barnyard' | 'forest' | 'lab';
+
 export interface LevelConfig {
   width: number;
   height: number;
@@ -16,6 +18,7 @@ export interface LevelData {
   tiles: LevelTile[];
   spawnPoints: Array<{ x: number; y: number }>;
   seed: number;
+  biome: Biome;
 }
 
 type RNG = () => number;
@@ -26,6 +29,7 @@ export function generateLevel(config: LevelConfig): LevelData {
   const fillRatio = clamp(config.fillRatio ?? 0.45, 0.1, 0.9);
   const spawnRadius = clamp(config.spawnRadius ?? Math.min(width, height) * 0.15, 1, Math.min(width, height) / 2);
   const rng = mulberry32(config.seed);
+  const biome = pickBiome(config.seed);
 
   const tiles: LevelTile[] = new Array(width * height).fill('wall');
 
@@ -92,7 +96,8 @@ export function generateLevel(config: LevelConfig): LevelData {
     height,
     tiles,
     spawnPoints,
-    seed: config.seed
+    seed: config.seed,
+    biome
   };
 }
 
@@ -113,4 +118,15 @@ function mulberry32(seed: number): RNG {
     t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
     return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
   };
+}
+
+function pickBiome(seed: number): Biome {
+  const value = Math.abs(seed % 1000) / 1000;
+  if (value < 0.33) {
+    return 'barnyard';
+  }
+  if (value < 0.66) {
+    return 'forest';
+  }
+  return 'lab';
 }

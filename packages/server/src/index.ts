@@ -7,6 +7,7 @@ import {
   createInitialInputState,
   MAX_PLAYERS,
   NETWORK_PROTOCOL_VERSION,
+  ObjectiveState,
   PlayerInputState,
   PlayerState,
   PlayerSummary,
@@ -16,6 +17,10 @@ import {
   PROJECTILE_SPEED,
   PLAYER_HURT_FLASH_TIME,
   PLAYER_INVULNERABILITY_TIME,
+  QuickPingBroadcastMessage,
+  QuickPingKind,
+  QuickPingMessage,
+  RosterEntry,
   ServerMessage,
   TICK_RATE,
   WorldSnapshot,
@@ -73,6 +78,8 @@ type PlayerSimState = PlayerState & {
   pendingAugments: AugmentOffer[];
   augments: AugmentId[];
   lastAugmentId: AugmentId | null;
+  ready: boolean;
+  lastPingTimestamp: number;
 };
 
 type EnemySimState = EnemyState & {
@@ -111,6 +118,13 @@ class GameWorld {
   private readonly enemyPool: EnemySimState[] = [];
   private minibossSpawnTimer = 0;
   private nextMinibossInterval = 55;
+  private waveNumber = 1;
+  private killsThisWave = 0;
+  private killsPerWave = 24;
+  private totalKills = 0;
+  private extractionReady = false;
+  private extractionCountdown: number | null = null;
+  private extractionPosition: Vector2D | null = null;
 
   constructor() {
     this.level = generateLevel(LEVEL_CONFIG);
@@ -144,7 +158,9 @@ class GameWorld {
       healthGrowthMultiplier: 1,
       pendingAugments: [],
       augments: [],
-      lastAugmentId: null
+      lastAugmentId: null,
+      ready: false,
+      lastPingTimestamp: 0
     };
     this.players.set(id, player);
     return player;
@@ -152,6 +168,9 @@ class GameWorld {
 
   removePlayer(id: string): void {
     this.players.delete(id);
+    if (!this.areAllPlayersReady()) {
+      this.extractionCountdown = null;
+    }
   }
 
   update(): void {
@@ -177,6 +196,7 @@ class GameWorld {
     this.trySpawnMiniboss(deltaSeconds);
     this.updateProjectiles(deltaSeconds);
     this.updateXpDrops(deltaSeconds);
+    this.updateObjectives(deltaSeconds);
   }
 
   snapshot(): WorldSnapshot {
@@ -191,11 +211,13 @@ class GameWorld {
         psychicLevel: player.psychicLevel,
         maxHealth: player.maxHealth,
         health: player.health,
-        experience: player.experience,
-        experienceToNext: player.experienceToNext,
-        hurtTimer: player.hurtTimer,
-        invulnerableTimer: player.invulnerableTimer,
-        lastAugmentId: player.lastAugmentId
+      experience: player.experience,
+      experienceToNext: player.experienceToNext,
+      hurtTimer: player.hurtTimer,
+      invulnerableTimer: player.invulnerableTimer,
+      lastAugmentId: player.lastAugmentId,
+      augments: player.augments.slice(),
+      ready: player.ready
       })),
       enemies: Array.from(this.enemies.values()).map(({ wanderDirection: _wd, switchTimer: _st, attackCooldown: _ac, ...enemy }) => ({
         ...enemy
@@ -214,8 +236,113 @@ class GameWorld {
         amount: drop.amount,
         position: drop.position,
         age: drop.age
-      }))
+      })),
+      objectives: this.buildObjectiveState()
     };
+  }
+
+  getObjectiveState(): ObjectiveState {
+    return this.buildObjectiveState();
+  }
+
+  setPlayerReady(playerId: string, ready: boolean): void {
+    const player = this.players.get(playerId);
+    if (!player) {
+      return;
+    }
+    if (player.ready === ready) {
+      return;
+    }
+    player.ready = ready;
+    if (!this.extractionReady) {
+      return;
+    }
+    if (this.areAllPlayersReady()) {
+      if (this.extractionCountdown === null) {
+        this.extractionCountdown = 35;
+      }
+    } else {
+      this.extractionCountdown = null;
+    }
+  }
+
+  quickPing(playerId: string, kind: QuickPingKind, rawPosition: Vector2D): void {
+    const player = this.players.get(playerId);
+    if (!player) {
+      return;
+    }
+    const now = Date.now();
+    if (now - player.lastPingTimestamp < 1200) {
+      return;
+    }
+    player.lastPingTimestamp = now;
+    const position = { x: rawPosition.x, y: rawPosition.y };
+    clampToLevel(position, this.level);
+    const message: QuickPingBroadcastMessage = {
+      type: 'ping-event',
+      playerId,
+      kind,
+      position,
+      playerName: player.displayName
+    };
+    this.events.push({ type: 'broadcast', message });
+  }
+
+  private buildObjectiveState(): ObjectiveState {
+    const bossCountdown = this.players.size === 0 || this.hasActiveMiniboss()
+      ? null
+      : Math.max(0, this.nextMinibossInterval - this.minibossSpawnTimer);
+    const progress = this.killsPerWave > 0 ? Math.min(1, this.killsThisWave / this.killsPerWave) : 0;
+    return {
+      wave: this.waveNumber,
+      waveProgress: progress,
+      totalKills: this.totalKills,
+      nextBossSeconds: bossCountdown,
+      extractionReady: this.extractionReady,
+      extractionCountdown: this.extractionReady ? this.extractionCountdown : null,
+      extractionPosition: this.extractionReady && this.extractionPosition
+        ? { x: this.extractionPosition.x, y: this.extractionPosition.y }
+        : null
+    };
+  }
+
+  private updateObjectives(deltaSeconds: number): void {
+    if (this.players.size === 0) {
+      this.extractionCountdown = null;
+      return;
+    }
+    if (this.extractionReady && this.extractionPosition === null) {
+      this.extractionPosition = this.pickExtractionPoint();
+    }
+    if (this.extractionCountdown !== null) {
+      if (!this.areAllPlayersReady()) {
+        this.extractionCountdown = null;
+      } else {
+        this.extractionCountdown = Math.max(0, this.extractionCountdown - deltaSeconds);
+      }
+    }
+  }
+
+  private areAllPlayersReady(): boolean {
+    if (this.players.size === 0) {
+      return false;
+    }
+    for (const player of this.players.values()) {
+      if (!player.ready) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  private pickExtractionPoint(): Vector2D {
+    if (this.level.spawnPoints.length > 0) {
+      const index = Math.floor(Math.random() * this.level.spawnPoints.length);
+      const spawn = this.level.spawnPoints[index];
+      return tileToWorld(spawn.x, spawn.y, this.level);
+    }
+    const tile = randomWalkableTile(this.walkableTiles);
+    return tileToWorld(tile.x + 0.5, tile.y + 0.5, this.level);
   }
 
   drainEvents(): WorldEvent[] {
@@ -769,7 +896,26 @@ class GameWorld {
     }
   }
 
+  private recordEnemyKill(enemy: EnemySimState): void {
+    this.totalKills += 1;
+    if (enemy.isBoss) {
+      this.killsThisWave += Math.ceil(this.killsPerWave * 0.4);
+    } else {
+      this.killsThisWave += 1;
+    }
+    this.killsThisWave = Math.min(this.killsThisWave, this.killsPerWave);
+    if (this.killsThisWave >= this.killsPerWave) {
+      this.waveNumber += 1;
+      this.killsThisWave = 0;
+      this.killsPerWave = Math.round(this.killsPerWave * 1.18 + 6);
+      if (!this.extractionReady && this.waveNumber >= 3) {
+        this.extractionReady = true;
+      }
+    }
+  }
+
   private handleEnemyDeath(enemy: EnemySimState): void {
+    this.recordEnemyKill(enemy);
     this.enemies.delete(enemy.id);
     const baseAmount = ENEMY_XP_VALUES[enemy.kind] ?? 10;
     if (enemy.isBoss) {
@@ -1000,7 +1146,9 @@ function handleClientMessage(context: ClientContext, raw: RawData): void {
         playerId: player.id,
         tickRate: TICK_RATE,
         level: world.level,
-        players: getPlayerSummaries()
+        players: getPlayerSummaries(),
+        roster: getRosterEntries(),
+        objectives: world.getObjectiveState()
       });
       break;
     }
@@ -1027,6 +1175,22 @@ function handleClientMessage(context: ClientContext, raw: RawData): void {
         return;
       }
       world.chooseAugment(context.id, message.offerId, message.augmentId);
+      break;
+    }
+
+    case 'set-ready': {
+      if (!context.hasJoined) {
+        return;
+      }
+      world.setPlayerReady(context.id, message.ready);
+      break;
+    }
+
+    case 'quick-ping': {
+      if (!context.hasJoined) {
+        return;
+      }
+      world.quickPing(context.id, message.kind, message.position);
       break;
     }
 
@@ -1162,6 +1326,21 @@ function getPlayerSummaries(): PlayerSummary[] {
     });
   }
   return summaries;
+}
+
+function getRosterEntries(): RosterEntry[] {
+  const roster: RosterEntry[] = [];
+  for (const player of world.players.values()) {
+    roster.push({
+      id: player.id,
+      displayName: player.displayName,
+      level: player.psychicLevel,
+      ready: player.ready,
+      lastAugmentId: player.lastAugmentId,
+      augmentCount: player.augments.length
+    });
+  }
+  return roster;
 }
 
 function broadcast(message: ServerMessage): void {

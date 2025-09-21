@@ -10,6 +10,7 @@
 - Authoritative Node server: deterministic tick loop (`60 Hz`), procedural level generator (random-walk caverns, spawn ring), player/enemy state sync via JSON websockets.
 - Client renderer: elevated orthographic camera, instanced tile meshes, smooth avatar interpolation, pointer-driven aiming, shader-lite polish.
 - Networking: hello/welcome handshake with protocol guard, input → server → snapshot flow, ping keep-alive, client-side reconciliation hooks and latency callbacks.
+- Dynamic HUD frameworks: roster/ready panel, objective tracker, ping wheel, and augment toasts all driven from shared snapshot data.
 
 **Recent Feature Pass (committed)**
 - Gameplay: Added `raccoon` ranged enemy and `coyote` miniboss with explosive shockwave telegraphs plus generous XP drops.
@@ -17,6 +18,8 @@
 - Feedback: New audio controller (lo-fi background loop, level-up & boss SFX), Key `V` camera tilt toggle mirrored in debug overlay and HUD tip.
 - Rendering: Projectile/enemy avatar pooling with faction-tinted VFX, per-faction impact colors, and boss-scaled textures.
 - Tooling: `npm run replay:snapshots` for offline snapshot analysis, level seed logging on server boot, HUD toasts for augment/boss events.
+- Co-op quality of life: ready-check button syncs to server, teammate augment choices surface in roster, ping wheel (`Key Q`) echoes to the world and HUD, and objective tracker exposes wave progress, boss countdown, and extraction state.
+- Visual foundations: biome-driven tile atlases, directional+ambient lighting, screen shake on player damage, shader-driven XP orbs, instanced biome props, and first-pass low-poly chicken/enemy meshes.
 
 **Baseline Polish (completed)**
 - Visual: Procedural chicken/enemy textures, additive projectile trails, pooled impact bursts, and harm flicker tuning.
@@ -30,6 +33,8 @@
 - Optional: `LEVEL_SEED=<int> npm run dev --workspace=@farsight/server`
 - Sanity: `npm run typecheck --workspaces` (clean)
 - Analysis: `npm run replay:snapshots -- logs/snapshots.json`
+- Smoke: `npm run smoke` spins up the server and verifies a headless bot handshake.
+- Perf: `npm run perf:fps` builds the client, runs `vite preview`, and records short FPS samples with Puppeteer.
 - Copy `.env.example` → `.env` to override ports or server origin locally.
 
 **Open Threads / Next Steps**
@@ -47,3 +52,4 @@
 - Networking client: `packages/client/src/game/network.ts`
 - Styles: `packages/client/src/style.css`
 - Dev helper runner: `scripts/dev-all.js`
+- Art direction: `docs/art-style.md`

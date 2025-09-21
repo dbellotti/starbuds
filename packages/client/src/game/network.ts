@@ -9,9 +9,15 @@ import {
   LevelData,
   LevelUpOfferMessage,
   NETWORK_PROTOCOL_VERSION,
+  ObjectiveState,
   PingMessage,
   PlayerSummary,
+  QuickPingBroadcastMessage,
+  QuickPingKind,
+  QuickPingMessage,
+  RosterEntry,
   ServerMessage,
+  Vector2D,
   WorldSnapshot
 } from '@farsight/shared';
 
@@ -21,12 +27,15 @@ export type PingListener = (latencyMs: number) => void;
 export type LevelUpOfferListener = (offer: LevelUpOfferMessage) => void;
 export type AugmentAppliedListener = (message: AugmentAppliedMessage) => void;
 export type BossSpawnListener = (message: BossSpawnedMessage) => void;
+export type PingEventListener = (message: QuickPingBroadcastMessage) => void;
 
 interface WelcomeState {
   playerId: string;
   tickRate: number;
   level: LevelData;
   players: PlayerSummary[];
+  roster: RosterEntry[];
+  objectives: ObjectiveState;
 }
 
 export class GameNetwork {
@@ -34,12 +43,15 @@ export class GameNetwork {
   private welcome: WelcomeState | null = null;
   private level: LevelData | null = null;
   private playerSummaries: PlayerSummary[] = [];
+  private roster: RosterEntry[] = [];
+  private latestObjectives: ObjectiveState | null = null;
   private readonly snapshotListeners = new Set<SnapshotListener>();
   private readonly disconnectListeners = new Set<DisconnectListener>();
   private readonly pingListeners = new Set<PingListener>();
   private readonly levelUpListeners = new Set<LevelUpOfferListener>();
   private readonly augmentListeners = new Set<AugmentAppliedListener>();
   private readonly bossListeners = new Set<BossSpawnListener>();
+  private readonly quickPingListeners = new Set<PingEventListener>();
   private inputSequence = 0;
   private pingTimer: number | null = null;
   private latestPingMs = 0;
@@ -82,10 +94,14 @@ export class GameNetwork {
             playerId: data.playerId,
             tickRate: data.tickRate,
             level: data.level,
-            players: data.players
+            players: data.players,
+            roster: data.roster,
+            objectives: data.objectives
           };
           this.level = data.level;
           this.playerSummaries = data.players;
+          this.roster = data.roster;
+          this.latestObjectives = data.objectives;
           this.startPingLoop();
           resolve(this.welcome);
         }
@@ -116,6 +132,14 @@ export class GameNetwork {
 
   getPlayerSummaries(): PlayerSummary[] {
     return this.playerSummaries;
+  }
+
+  getRoster(): RosterEntry[] {
+    return this.roster;
+  }
+
+  getObjectives(): ObjectiveState | null {
+    return this.latestObjectives;
   }
 
   onSnapshot(listener: SnapshotListener): () => void {
@@ -151,6 +175,11 @@ export class GameNetwork {
     return () => this.bossListeners.delete(listener);
   }
 
+  onPingEvent(listener: PingEventListener): () => void {
+    this.quickPingListeners.add(listener);
+    return () => this.quickPingListeners.delete(listener);
+  }
+
   sendInput(state: InputMessage['state']): void {
     if (!this.socket || this.socket.readyState !== WebSocket.OPEN) {
       return;
@@ -171,6 +200,32 @@ export class GameNetwork {
       type: 'choose-augment',
       offerId,
       augmentId
+    };
+    this.socket.send(JSON.stringify(message satisfies ClientMessage));
+  }
+
+  setReady(ready: boolean): void {
+    if (!this.socket || this.socket.readyState !== WebSocket.OPEN) {
+      return;
+    }
+    this.socket.send(
+      JSON.stringify(
+        {
+          type: 'set-ready',
+          ready
+        } satisfies ClientMessage
+      )
+    );
+  }
+
+  sendQuickPing(kind: QuickPingKind, position: Vector2D): void {
+    if (!this.socket || this.socket.readyState !== WebSocket.OPEN) {
+      return;
+    }
+    const message: QuickPingMessage = {
+      type: 'quick-ping',
+      kind,
+      position
     };
     this.socket.send(JSON.stringify(message satisfies ClientMessage));
   }
@@ -205,6 +260,8 @@ export class GameNetwork {
     this.welcome = null;
     this.level = null;
     this.playerSummaries = [];
+    this.roster = [];
+    this.latestObjectives = null;
     this.latestPingMs = 0;
   }
 
@@ -220,6 +277,15 @@ export class GameNetwork {
           id: player.id,
           displayName: player.displayName
         }));
+        this.roster = message.snapshot.players.map((player) => ({
+          id: player.id,
+          displayName: player.displayName,
+          level: player.psychicLevel,
+          ready: player.ready,
+          lastAugmentId: player.lastAugmentId,
+          augmentCount: player.augments.length
+        }));
+        this.latestObjectives = message.snapshot.objectives;
         for (const listener of this.snapshotListeners) {
           listener(message.snapshot);
         }
@@ -247,6 +313,12 @@ export class GameNetwork {
       }
       case 'boss-spawned': {
         for (const listener of this.bossListeners) {
+          listener(message);
+        }
+        break;
+      }
+      case 'ping-event': {
+        for (const listener of this.quickPingListeners) {
           listener(message);
         }
         break;
