@@ -20,8 +20,8 @@ import {
   Vector3,
   WebGLRenderer
 } from 'three';
-import type { EnemyKind, LevelData, WorldSnapshot } from '@farsight/shared';
-import { PROJECTILE_LIFETIME, TILE_SIZE } from '@farsight/shared';
+import type { EnemyKind, EnemyState, LevelData, PlayerState, WorldSnapshot } from '@farsight/shared';
+import { PLAYER_HURT_FLASH_TIME, PROJECTILE_LIFETIME, TILE_SIZE } from '@farsight/shared';
 import { InputController } from './input';
 import { GameNetwork } from './network';
 import { createHud } from './hud';
@@ -239,6 +239,7 @@ class WorldRenderer {
     const seenEnemies = new Set<string>();
     const seenProjectiles = new Set<string>();
     const seenXp = new Set<string>();
+    const targetedCounts = new Map<string, number>();
 
     for (const player of snapshot.players) {
       let avatar = this.players.get(player.id);
@@ -247,8 +248,7 @@ class WorldRenderer {
         this.players.set(player.id, avatar);
         this.sceneGroup.add(avatar.mesh);
       }
-      avatar.setDisplayName(player.displayName);
-      avatar.setTarget(player.position.x, player.position.y, player.facing);
+      avatar.setState(player);
       seenPlayers.add(player.id);
     }
 
@@ -259,8 +259,11 @@ class WorldRenderer {
         this.enemies.set(enemy.id, avatar);
         this.sceneGroup.add(avatar.mesh);
       }
-      avatar.setTarget(enemy.position.x, enemy.position.y, enemy.velocity.x, enemy.velocity.y);
+      avatar.setState(enemy);
       seenEnemies.add(enemy.id);
+      if (enemy.targetPlayerId && enemy.intent === 'windup') {
+        targetedCounts.set(enemy.targetPlayerId, (targetedCounts.get(enemy.targetPlayerId) ?? 0) + 1);
+      }
     }
 
     for (const projectile of snapshot.projectiles) {
@@ -287,6 +290,10 @@ class WorldRenderer {
       }
       orb.setState(drop.position.x, drop.position.y, drop.amount, drop.age);
       seenXp.add(drop.id);
+    }
+
+    for (const [id, avatar] of this.players.entries()) {
+      avatar.setTargeted((targetedCounts.get(id) ?? 0) > 0);
     }
 
     for (const [id, avatar] of this.players.entries()) {
@@ -566,46 +573,128 @@ class LevelRenderer {
 }
 
 class PlayerAvatar {
-  readonly mesh: Mesh;
+  readonly mesh: Group;
   readonly id: string;
+  private readonly body: Mesh;
+  private readonly material: MeshBasicMaterial;
   private readonly currentPosition = new Vector2();
   private readonly targetPosition = new Vector2();
+  private readonly baseColor = new Color();
+  private readonly hurtColor = new Color(0xff4d6d);
+  private readonly tempColor = new Color();
+  private readonly reticle: Mesh;
+  private readonly reticleMaterial: MeshBasicMaterial;
+  private readonly reticleBaseScale: number;
   private currentFacing = 0;
   private targetFacing = 0;
-  private readonly material: MeshBasicMaterial;
+  private hurtTimer = 0;
+  private invulnerableTimer = 0;
+  private time = 0;
+  private targeted = false;
+  private isLocal = false;
   private displayName = '';
+  private initialized = false;
 
   constructor(id: string, isLocal: boolean) {
     this.id = id;
+    this.mesh = new Group();
+    this.mesh.renderOrder = 4;
+
     const geometry = new PlaneGeometry(18, 24);
     geometry.rotateX(-Math.PI / 2);
     this.material = new MeshBasicMaterial({ color: pickColor(id, isLocal), transparent: true });
-    this.mesh = new Mesh(geometry, this.material);
-    this.mesh.position.y = PLAYER_HEIGHT;
-    this.mesh.renderOrder = 4;
     this.material.depthWrite = false;
+
+    this.body = new Mesh(geometry, this.material);
+    this.body.position.y = PLAYER_HEIGHT;
+    this.body.renderOrder = 4;
+    this.mesh.add(this.body);
+
+    const reticleGeometry = new PlaneGeometry(1, 1);
+    reticleGeometry.rotateX(-Math.PI / 2);
+    this.reticleMaterial = new MeshBasicMaterial({
+      color: 0xfacc15,
+      transparent: true,
+      opacity: 0,
+      blending: AdditiveBlending,
+      depthWrite: false
+    });
+    this.reticle = new Mesh(reticleGeometry, this.reticleMaterial);
+    this.reticle.position.y = 0.2;
+    this.reticle.visible = false;
+    this.reticleBaseScale = TILE_SIZE * 0.85;
+    this.reticle.scale.setScalar(this.reticleBaseScale);
+    this.mesh.add(this.reticle);
+
+    this.baseColor.setHex(pickColor(id, isLocal));
+    this.isLocal = isLocal;
   }
 
-  setTarget(x: number, y: number, facing: number): void {
-    this.targetPosition.set(x, y);
-    this.targetFacing = facing;
+  setState(state: PlayerState): void {
+    this.displayName = state.displayName;
+    this.targetPosition.set(state.position.x, state.position.y);
+    this.targetFacing = state.facing;
+    this.hurtTimer = Math.max(this.hurtTimer, state.hurtTimer);
+    this.invulnerableTimer = Math.max(this.invulnerableTimer, state.invulnerableTimer);
+    if (!this.initialized) {
+      this.currentPosition.set(state.position.x, state.position.y);
+      this.currentFacing = state.facing;
+      this.mesh.position.set(state.position.x, 0, state.position.y);
+      this.mesh.rotation.y = -this.currentFacing + Math.PI / 2;
+      this.initialized = true;
+    }
   }
 
   setIsLocal(isLocal: boolean): void {
-    this.material.color.setHex(pickColor(this.id, isLocal));
+    this.isLocal = isLocal;
+    this.baseColor.setHex(pickColor(this.id, isLocal));
+    this.material.color.copy(this.baseColor);
   }
 
-  setDisplayName(name: string): void {
-    this.displayName = name;
+  setTargeted(value: boolean): void {
+    this.targeted = value;
+    if (value) {
+      this.reticle.visible = true;
+    }
   }
 
   update(deltaSeconds: number): void {
+    this.time += deltaSeconds;
     const lerpFactor = Math.min(1, deltaSeconds * 10);
     this.currentPosition.lerp(this.targetPosition, lerpFactor);
     this.currentFacing = MathUtils.lerp(this.currentFacing, this.targetFacing, lerpFactor);
+    this.hurtTimer = Math.max(0, this.hurtTimer - deltaSeconds);
+    this.invulnerableTimer = Math.max(0, this.invulnerableTimer - deltaSeconds);
 
-    this.mesh.position.set(this.currentPosition.x, PLAYER_HEIGHT, this.currentPosition.y);
+    this.mesh.position.set(this.currentPosition.x, 0, this.currentPosition.y);
     this.mesh.rotation.y = -this.currentFacing + Math.PI / 2;
+
+    const hurtRatio = PLAYER_HURT_FLASH_TIME > 0 ? Math.min(1, this.hurtTimer / PLAYER_HURT_FLASH_TIME) : 0;
+    this.tempColor.copy(this.baseColor);
+    if (hurtRatio > 0) {
+      const intensity = 0.5 + 0.25 * Math.sin(this.time * 24);
+      this.tempColor.lerp(this.hurtColor, Math.min(1, hurtRatio * intensity));
+    }
+    this.material.color.copy(this.tempColor);
+
+    if (this.invulnerableTimer > 0) {
+      const flicker = Math.floor(this.time * 16) % 2 === 0 ? 0.4 : -0.2;
+      this.material.opacity = Math.min(1, 0.75 + flicker * 0.5);
+    } else {
+      this.material.opacity = 1;
+    }
+
+    if (this.targeted) {
+      const pulse = 1 + Math.sin(this.time * 8) * 0.12;
+      this.reticle.scale.setScalar(this.reticleBaseScale * pulse);
+      this.reticleMaterial.opacity = Math.min(1, 0.25 + (this.isLocal ? 0.35 : 0.2));
+    } else if (this.reticle.visible) {
+      this.reticleMaterial.opacity = Math.max(0, this.reticleMaterial.opacity - deltaSeconds * 3);
+      this.reticle.scale.setScalar(this.reticleBaseScale);
+      if (this.reticleMaterial.opacity <= 0.02) {
+        this.reticle.visible = false;
+      }
+    }
   }
 
   getPosition(): Vector2 {
@@ -614,39 +703,106 @@ class PlayerAvatar {
 }
 
 class EnemyAvatar {
-  readonly mesh: Mesh;
+  readonly mesh: Group;
   readonly id: string;
+  private readonly body: Mesh;
+  private readonly material: MeshBasicMaterial;
+  private readonly telegraph: Mesh;
+  private readonly telegraphMaterial: MeshBasicMaterial;
   private readonly currentPosition = new Vector2();
   private readonly targetPosition = new Vector2();
   private currentFacing = 0;
   private targetFacing = 0;
-  private readonly material: MeshBasicMaterial;
+  private intent: EnemyState['intent'] = 'idle';
+  private displayIntentTimer = 0;
+  private displayIntentDuration = 0;
+  private attackRange = TILE_SIZE;
+  private time = 0;
+  private initialized = false;
 
   constructor(id: string, kind: EnemyKind) {
     this.id = id;
-    const geometry = new PlaneGeometry(20, 20);
-    geometry.rotateX(-Math.PI / 2);
-    this.material = new MeshBasicMaterial({ color: ENEMY_COLORS[kind], transparent: true, opacity: 0.95 });
-    this.mesh = new Mesh(geometry, this.material);
-    this.mesh.position.y = PLAYER_HEIGHT * 0.8;
+    this.mesh = new Group();
     this.mesh.renderOrder = 2;
+
+    const bodyGeometry = new PlaneGeometry(20, 20);
+    bodyGeometry.rotateX(-Math.PI / 2);
+    this.material = new MeshBasicMaterial({ color: ENEMY_COLORS[kind], transparent: true, opacity: 0.95 });
     this.material.depthWrite = false;
+    this.body = new Mesh(bodyGeometry, this.material);
+    this.body.position.y = PLAYER_HEIGHT * 0.8;
+    this.body.renderOrder = 2;
+    this.mesh.add(this.body);
+
+    const telegraphGeometry = new PlaneGeometry(1, 1);
+    telegraphGeometry.rotateX(-Math.PI / 2);
+    const telegraphTexture = createRadialTexture('rgba(255,255,255,0.2)', 'rgba(248,113,113,0.42)', 'rgba(248,113,113,0)');
+    this.telegraphMaterial = new MeshBasicMaterial({
+      map: telegraphTexture,
+      transparent: true,
+      opacity: 0,
+      blending: AdditiveBlending,
+      depthWrite: false
+    });
+    this.telegraph = new Mesh(telegraphGeometry, this.telegraphMaterial);
+    this.telegraph.position.y = 0.15;
+    this.telegraph.visible = false;
+    this.mesh.add(this.telegraph);
   }
 
-  setTarget(x: number, y: number, vx: number, vy: number): void {
-    this.targetPosition.set(x, y);
-    if (Math.abs(vx) > 0.01 || Math.abs(vy) > 0.01) {
-      this.targetFacing = Math.atan2(vy, vx);
+  setState(state: EnemyState): void {
+    this.targetPosition.set(state.position.x, state.position.y);
+    if (Math.abs(state.velocity.x) > 0.01 || Math.abs(state.velocity.y) > 0.01) {
+      this.targetFacing = Math.atan2(state.velocity.y, state.velocity.x);
+    }
+    this.intent = state.intent;
+    this.displayIntentDuration = state.intentDuration;
+    this.displayIntentTimer = state.intentTimer;
+    this.attackRange = state.attackRange;
+    if (!this.initialized) {
+      this.currentPosition.set(state.position.x, state.position.y);
+      this.mesh.position.set(state.position.x, 0, state.position.y);
+      this.currentFacing = this.targetFacing;
+      this.mesh.rotation.y = -this.currentFacing + Math.PI / 2;
+      this.initialized = true;
     }
   }
 
   update(deltaSeconds: number): void {
+    this.time += deltaSeconds;
     const lerpFactor = Math.min(1, deltaSeconds * 6);
     this.currentPosition.lerp(this.targetPosition, lerpFactor);
     this.currentFacing = MathUtils.lerp(this.currentFacing, this.targetFacing, lerpFactor);
 
-    this.mesh.position.set(this.currentPosition.x, PLAYER_HEIGHT * 0.8, this.currentPosition.y);
+    this.mesh.position.set(this.currentPosition.x, 0, this.currentPosition.y);
     this.mesh.rotation.y = -this.currentFacing + Math.PI / 2;
+
+    this.updateTelegraph(deltaSeconds);
+  }
+
+  private updateTelegraph(deltaSeconds: number): void {
+    const diameter = Math.max(24, this.attackRange * 2);
+    if (this.intent === 'windup') {
+      this.displayIntentTimer = Math.max(0, this.displayIntentTimer - deltaSeconds);
+      const progress = this.displayIntentDuration > 0 ? 1 - this.displayIntentTimer / this.displayIntentDuration : 1;
+      const pulse = 1 + Math.sin((progress + this.time) * Math.PI * 2) * 0.08;
+      this.telegraph.visible = true;
+      this.telegraph.scale.setScalar(diameter * pulse);
+      this.telegraphMaterial.opacity = Math.min(0.9, 0.25 + progress * 0.55);
+    } else if (this.intent === 'recover') {
+      this.telegraph.visible = true;
+      this.telegraph.scale.setScalar(diameter);
+      this.telegraphMaterial.opacity = Math.max(0, this.telegraphMaterial.opacity - deltaSeconds * 1.6);
+      if (this.telegraphMaterial.opacity <= 0.02) {
+        this.telegraph.visible = false;
+      }
+    } else if (this.telegraph.visible) {
+      this.telegraphMaterial.opacity = Math.max(0, this.telegraphMaterial.opacity - deltaSeconds * 2.2);
+      this.telegraph.scale.setScalar(diameter);
+      if (this.telegraphMaterial.opacity <= 0.02) {
+        this.telegraph.visible = false;
+      }
+    }
   }
 }
 

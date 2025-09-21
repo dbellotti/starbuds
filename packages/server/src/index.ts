@@ -23,6 +23,13 @@ import {
   PROJECTILE_RADIUS,
   PROJECTILE_COOLDOWN,
   ENEMY_XP_VALUES,
+  ENEMY_ATTACK_DAMAGE,
+  ENEMY_ATTACK_RANGE,
+  ENEMY_ATTACK_WINDUP,
+  ENEMY_ATTACK_RECOVERY,
+  ENEMY_ATTACK_COOLDOWN,
+  PLAYER_HURT_FLASH_TIME,
+  PLAYER_INVULNERABILITY_TIME,
   generateLevel,
   LevelData,
   TILE_SIZE
@@ -46,11 +53,14 @@ type PlayerSimState = PlayerState & {
   experienceToNext: number;
   health: number;
   maxHealth: number;
+  hurtTimer: number;
+  invulnerableTimer: number;
 };
 
 type EnemySimState = EnemyState & {
   wanderDirection: Vector2D;
   switchTimer: number;
+  attackCooldown: number;
 };
 
 type ProjectileSimState = ProjectileState & {
@@ -90,7 +100,9 @@ class GameWorld {
       experience: 0,
       experienceToNext: 100,
       health: 120,
-      maxHealth: 120
+      maxHealth: 120,
+      hurtTimer: 0,
+      invulnerableTimer: 0
     };
     this.players.set(id, player);
     return player;
@@ -112,6 +124,8 @@ class GameWorld {
         player.facing = Math.atan2(velocity.y, velocity.x);
       }
       player.primaryCooldown = Math.max(0, player.primaryCooldown - deltaSeconds);
+      player.hurtTimer = Math.max(0, player.hurtTimer - deltaSeconds);
+      player.invulnerableTimer = Math.max(0, player.invulnerableTimer - deltaSeconds);
       if (player.input.primaryAbility && player.primaryCooldown <= 0) {
         this.firePrimary(player);
       }
@@ -135,9 +149,11 @@ class GameWorld {
         maxHealth: player.maxHealth,
         health: player.health,
         experience: player.experience,
-        experienceToNext: player.experienceToNext
+        experienceToNext: player.experienceToNext,
+        hurtTimer: player.hurtTimer,
+        invulnerableTimer: player.invulnerableTimer
       })),
-      enemies: Array.from(this.enemies.values()).map(({ wanderDirection: _wd, switchTimer: _st, ...enemy }) => ({
+      enemies: Array.from(this.enemies.values()).map(({ wanderDirection: _wd, switchTimer: _st, attackCooldown: _ac, ...enemy }) => ({
         ...enemy
       })),
       projectiles: Array.from(this.projectiles.values()).map((projectile) => ({
@@ -197,15 +213,60 @@ class GameWorld {
 
     for (const enemy of this.enemies.values()) {
       enemy.switchTimer -= deltaSeconds;
-      if (enemy.switchTimer <= 0) {
-        enemy.switchTimer = 1.5 + Math.random() * 2;
-        enemy.wanderDirection = this.selectEnemyDirection(enemy, players);
+      enemy.attackCooldown = Math.max(0, enemy.attackCooldown - deltaSeconds);
+
+      if (enemy.intent !== 'idle') {
+        enemy.intentTimer = Math.max(0, enemy.intentTimer - deltaSeconds);
+      }
+
+      if (enemy.intent === 'windup') {
+        enemy.velocity.x = 0;
+        enemy.velocity.y = 0;
+        if (enemy.intentTimer <= 0) {
+          this.resolveEnemyAttack(enemy, players);
+          enemy.intent = 'recover';
+          enemy.intentDuration = getEnemyAttackRecovery(enemy.kind);
+          enemy.intentTimer = enemy.intentDuration;
+        }
+      } else if (enemy.intent === 'recover') {
+        if (enemy.intentTimer <= 0) {
+          enemy.intent = 'idle';
+          enemy.intentTimer = 0;
+          enemy.intentDuration = 0;
+          enemy.targetPlayerId = null;
+        }
+      }
+
+      if (enemy.intent === 'idle') {
+        if (enemy.switchTimer <= 0) {
+          enemy.switchTimer = 1.5 + Math.random() * 2;
+          enemy.wanderDirection = this.selectEnemyDirection(enemy, players);
+        }
+
+        const target = this.pickEnemyTarget(enemy, players);
+        if (target) {
+          const dx = target.position.x - enemy.position.x;
+          const dy = target.position.y - enemy.position.y;
+          const distance = Math.hypot(dx, dy);
+          if (enemy.attackCooldown <= 0 && distance <= enemy.attackRange) {
+            this.beginEnemyWindup(enemy, target);
+          } else if (distance < enemy.attackRange * 1.35) {
+            const length = distance || 1;
+            enemy.wanderDirection = { x: dx / length, y: dy / length };
+          }
+        }
       }
 
       const speed = getEnemySpeed(enemy.kind);
+      let speedScale = 1;
+      if (enemy.intent === 'windup') {
+        speedScale = 0;
+      } else if (enemy.intent === 'recover') {
+        speedScale = 0.4;
+      }
       enemy.velocity = {
-        x: enemy.wanderDirection.x * speed,
-        y: enemy.wanderDirection.y * speed
+        x: enemy.wanderDirection.x * speed * speedScale,
+        y: enemy.wanderDirection.y * speed * speedScale
       };
 
       enemy.position.x += enemy.velocity.x * deltaSeconds;
@@ -239,6 +300,78 @@ class GameWorld {
     return { x: Math.cos(angle), y: Math.sin(angle) };
   }
 
+  private pickEnemyTarget(enemy: EnemySimState, players: PlayerSimState[]): PlayerSimState | null {
+    let target: PlayerSimState | null = null;
+    let closest = Number.POSITIVE_INFINITY;
+    for (const player of players) {
+      const dx = player.position.x - enemy.position.x;
+      const dy = player.position.y - enemy.position.y;
+      const distanceSq = dx * dx + dy * dy;
+      if (distanceSq < closest) {
+        closest = distanceSq;
+        target = player;
+      }
+    }
+    return target;
+  }
+
+  private beginEnemyWindup(enemy: EnemySimState, target: PlayerSimState): void {
+    const windup = getEnemyAttackWindup(enemy.kind);
+    enemy.intent = 'windup';
+    enemy.intentDuration = windup;
+    enemy.intentTimer = windup;
+    enemy.targetPlayerId = target.id;
+    const dx = target.position.x - enemy.position.x;
+    const dy = target.position.y - enemy.position.y;
+    const length = Math.hypot(dx, dy) || 1;
+    enemy.wanderDirection = { x: dx / length, y: dy / length };
+    enemy.attackCooldown = getEnemyAttackCooldown(enemy.kind);
+    enemy.switchTimer = 0.5;
+  }
+
+  private resolveEnemyAttack(enemy: EnemySimState, players: PlayerSimState[]): void {
+    const range = enemy.attackRange;
+    const damage = getEnemyAttackDamage(enemy.kind);
+    for (const player of players) {
+      const dx = player.position.x - enemy.position.x;
+      const dy = player.position.y - enemy.position.y;
+      if (dx * dx + dy * dy <= range * range) {
+        this.damagePlayer(player, damage, enemy.position);
+      }
+    }
+  }
+
+  private damagePlayer(player: PlayerSimState, amount: number, origin: Vector2D): void {
+    if (player.invulnerableTimer > 0) {
+      return;
+    }
+    player.health = Math.max(0, player.health - amount);
+    player.hurtTimer = Math.max(player.hurtTimer, PLAYER_HURT_FLASH_TIME);
+    player.invulnerableTimer = Math.max(player.invulnerableTimer, PLAYER_INVULNERABILITY_TIME);
+
+    const dx = player.position.x - origin.x;
+    const dy = player.position.y - origin.y;
+    const distance = Math.hypot(dx, dy) || 1;
+    const knockback = 42;
+    player.position.x += (dx / distance) * knockback;
+    player.position.y += (dy / distance) * knockback;
+    clampToLevel(player.position, this.level);
+
+    if (player.health <= 0) {
+      this.respawnPlayer(player);
+    }
+  }
+
+  private respawnPlayer(player: PlayerSimState): void {
+    const spawn = this.pickSpawnPoint();
+    player.position.x = spawn.x;
+    player.position.y = spawn.y;
+    player.velocity = { x: 0, y: 0 };
+    player.health = player.maxHealth;
+    player.hurtTimer = 0;
+    player.invulnerableTimer = Math.max(player.invulnerableTimer, PLAYER_INVULNERABILITY_TIME * 2.5);
+  }
+
   private spawnEnemy(kind: EnemyKind): void {
     const tile = randomWalkableTile(this.walkableTiles);
     const position = tileToWorld(tile.x + 0.5, tile.y + 0.5, this.level);
@@ -251,7 +384,13 @@ class GameWorld {
       health: getEnemyMaxHealth(kind),
       maxHealth: getEnemyMaxHealth(kind),
       wanderDirection: { x: 0, y: 0 },
-      switchTimer: 0
+      switchTimer: 0,
+      attackCooldown: Math.random() * 0.5,
+      intent: 'idle',
+      intentTimer: 0,
+      intentDuration: 0,
+      attackRange: getEnemyAttackRange(kind),
+      targetPlayerId: null
     };
     this.enemies.set(id, enemy);
   }
@@ -518,6 +657,26 @@ function getEnemyMaxHealth(kind: EnemyKind): number {
     default:
       return 30;
   }
+}
+
+function getEnemyAttackRange(kind: EnemyKind): number {
+  return ENEMY_ATTACK_RANGE[kind] ?? 48;
+}
+
+function getEnemyAttackDamage(kind: EnemyKind): number {
+  return ENEMY_ATTACK_DAMAGE[kind] ?? 18;
+}
+
+function getEnemyAttackWindup(kind: EnemyKind): number {
+  return ENEMY_ATTACK_WINDUP[kind] ?? 0.6;
+}
+
+function getEnemyAttackRecovery(kind: EnemyKind): number {
+  return ENEMY_ATTACK_RECOVERY[kind] ?? 0.7;
+}
+
+function getEnemyAttackCooldown(kind: EnemyKind): number {
+  return ENEMY_ATTACK_COOLDOWN[kind] ?? 1.4;
 }
 
 function tileToWorld(x: number, y: number, level: LevelData): Vector2D {

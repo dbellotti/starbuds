@@ -33,6 +33,36 @@ canvas {
   transition: opacity 0.3s ease;
 }
 
+.hud-damage-flash {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: radial-gradient(circle at 50% 50%, rgba(248, 113, 113, 0.18), rgba(15, 23, 42, 0.92));
+  mix-blend-mode: screen;
+  opacity: 0;
+  transition: opacity 0.08s ease;
+  z-index: 1;
+}
+
+.hud-danger {
+  position: absolute;
+  top: 32px;
+  left: 50%;
+  transform: translateX(-50%);
+  font-size: 12px;
+  letter-spacing: 4px;
+  color: #f87171;
+  text-shadow: 0 0 12px rgba(248, 113, 113, 0.75);
+  opacity: 0;
+  transition: opacity 0.2s ease;
+  z-index: 2;
+}
+
+.hud-danger.is-visible {
+  opacity: 1;
+  animation: hud-warning-pulse 0.6s infinite alternate;
+}
+
 .hud-panel {
   position: absolute;
   bottom: 24px;
@@ -44,6 +74,17 @@ canvas {
   padding: 16px 20px;
   min-width: 260px;
   pointer-events: none;
+  z-index: 2;
+}
+
+.hud-panel.is-hurt {
+  border-color: rgba(248, 113, 113, 0.6);
+  box-shadow: 0 0 16px rgba(248, 113, 113, 0.45);
+}
+
+.hud-panel.is-invulnerable {
+  border-color: rgba(56, 189, 248, 0.55);
+  box-shadow: 0 0 14px rgba(56, 189, 248, 0.4);
 }
 
 .hud-name {
@@ -112,4 +153,13 @@ canvas {
   margin-top: 6px;
   text-transform: uppercase;
   letter-spacing: 1px;
+}
+
+@keyframes hud-warning-pulse {
+  from {
+    transform: translateX(-50%) scale(1);
+  }
+  to {
+    transform: translateX(-50%) scale(1.08);
+  }
 }
