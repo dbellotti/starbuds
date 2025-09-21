@@ -1,0 +1,10 @@
+node_modules
+.DS_Store
+dist
+coverage
+npm-debug.log*
+*.log
+tmp
+out
+.vscode
+.idea

@@ -1,0 +1,26 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "outDir": "dist",
+    "lib": [
+      "ES2020"
+    ],
+    "types": [
+      "node"
+    ],
+    "noEmit": false,
+    "moduleResolution": "Node",
+    "baseUrl": ".",
+    "paths": {
+      "@farsight/shared": [
+        "../shared/src/index"
+      ],
+      "@farsight/shared/*": [
+        "../shared/src/*"
+      ]
+    }
+  },
+  "include": [
+    "src"
+  ]
+}
