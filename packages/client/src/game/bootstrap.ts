@@ -6,6 +6,8 @@ import {
   Float32BufferAttribute,
   Group,
   InstancedMesh,
+  Line,
+  LineBasicMaterial,
   MathUtils,
   Matrix4,
   Mesh,
@@ -21,10 +23,11 @@ import {
   WebGLRenderer
 } from 'three';
 import type { EnemyKind, EnemyState, LevelData, PlayerState, WorldSnapshot } from '@farsight/shared';
-import { PLAYER_HURT_FLASH_TIME, PROJECTILE_LIFETIME, TILE_SIZE } from '@farsight/shared';
+import { PLAYER_HURT_FLASH_TIME, PROJECTILE_LIFETIME, TILE_SIZE, TICK_RATE } from '@farsight/shared';
 import { InputController } from './input';
 import { GameNetwork } from './network';
 import { createHud } from './hud';
+import { createDebugOverlay } from './debugOverlay';
 import { getServerUrl } from '../config';
 
 const DESIGN_WORLD_UNITS = 480;
@@ -36,6 +39,10 @@ const ENEMY_COLORS: Record<EnemyKind, number> = {
   hawk: 0x93c5fd,
   snake: 0x4ade80
 };
+const PLAYER_TEXTURE = createChickenTexture();
+const ENEMY_TEXTURES = createEnemyTextures();
+const PROJECTILE_TRAIL_LENGTH = 12;
+const IMPACT_COLOR = 0x8ecaff;
 
 export async function bootstrapGame(): Promise<void> {
   const mountNode = ensureMountNode();
@@ -48,11 +55,17 @@ export async function bootstrapGame(): Promise<void> {
   const camera = createCamera(new Vector2(window.innerWidth, window.innerHeight));
   const worldRenderer = new WorldRenderer(scene);
   const hud = createHud(mountNode);
+  const debug = createDebugOverlay(mountNode);
 
   handleResize(renderer, camera);
 
   const pointerWorld = new Vector2();
   let inputInterval: number | null = null;
+  let serverTickRate = TICK_RATE;
+  let lastSnapshotTick = 0;
+  let lastSnapshotTime = 0;
+  let snapshotRateSmooth = TICK_RATE;
+  let fpsSmooth = 60;
   const inputController = new InputController(() => {
     const local = worldRenderer.getLocalPlayerPosition();
     if (!local) {
@@ -67,7 +80,23 @@ export async function bootstrapGame(): Promise<void> {
   window.addEventListener('contextmenu', (event) => event.preventDefault());
 
   const network = new GameNetwork();
+  const detachPing = network.onPing((latency) => {
+    debug.updateNetworkStats({ pingMs: latency });
+  });
   network.onSnapshot((snapshot) => {
+    const now = performance.now();
+    if (lastSnapshotTime > 0 && serverTickRate > 0) {
+      const tickDelta = snapshot.tick - lastSnapshotTick;
+      const elapsedMs = now - lastSnapshotTime;
+      const expectedMs = (tickDelta / serverTickRate) * 1000;
+      const driftMs = elapsedMs - expectedMs;
+      const arrivalHz = elapsedMs > 0 ? (tickDelta / elapsedMs) * 1000 : serverTickRate;
+      snapshotRateSmooth = MathUtils.lerp(snapshotRateSmooth, arrivalHz, 0.2);
+      debug.updateNetworkStats({ tickDriftMs: driftMs, snapshotsPerSecond: snapshotRateSmooth });
+    }
+    lastSnapshotTime = now;
+    lastSnapshotTick = snapshot.tick;
+
     worldRenderer.applySnapshot(snapshot);
     hud.update(snapshot, network.getPlayerId());
   });
@@ -77,6 +106,7 @@ export async function bootstrapGame(): Promise<void> {
       inputInterval = null;
     }
     hud.update(emptySnapshot, null);
+    debug.updateNetworkStats({ pingMs: Number.NaN, tickDriftMs: Number.NaN, snapshotsPerSecond: Number.NaN });
     console.warn('Disconnected from server');
   });
 
@@ -87,9 +117,16 @@ export async function bootstrapGame(): Promise<void> {
     const welcome = await network.connect(serverUrl, displayName);
     worldRenderer.applyLevel(welcome.level);
     worldRenderer.setLocalPlayerId(welcome.playerId);
+    serverTickRate = welcome.tickRate;
+    snapshotRateSmooth = welcome.tickRate;
     console.info(`Connected to server as ${welcome.playerId}`);
   } catch (error) {
     console.error('Failed to connect to game server', error);
+    detachPing();
+    inputController.dispose();
+    network.dispose();
+    hud.dispose();
+    debug.dispose();
     return;
   }
 
@@ -105,6 +142,12 @@ export async function bootstrapGame(): Promise<void> {
     worldRenderer.update(deltaSeconds);
     followCamera(camera, worldRenderer, deltaSeconds);
 
+    if (deltaSeconds > 0) {
+      const fpsInstant = 1 / deltaSeconds;
+      fpsSmooth = MathUtils.lerp(fpsSmooth, fpsInstant, 0.1);
+      debug.updateRenderStats(fpsSmooth);
+    }
+
     renderer.render(scene, camera);
     requestAnimationFrame(renderLoop);
   };
@@ -118,6 +161,8 @@ export async function bootstrapGame(): Promise<void> {
     inputController.dispose();
     network.dispose();
     hud.dispose();
+    detachPing();
+    debug.dispose();
   });
 }
 
@@ -210,6 +255,7 @@ class WorldRenderer {
   private readonly levelRenderer = new LevelRenderer();
   private readonly projectileGroup = new Group();
   private readonly xpGroup = new Group();
+  private readonly impactSystem = new ImpactSystem();
   private readonly decor = new DecorRenderer();
   private localPlayerId: string | null = null;
 
@@ -219,12 +265,14 @@ class WorldRenderer {
     this.sceneGroup.add(this.levelRenderer.group);
     this.sceneGroup.add(this.projectileGroup);
     this.sceneGroup.add(this.xpGroup);
+    this.sceneGroup.add(this.impactSystem.group);
   }
 
   applyLevel(level: LevelData): void {
     this.decor.applyLevel(level);
     this.levelRenderer.applyLevel(level);
     this.clearTransients();
+    this.impactSystem.clear();
   }
 
   setLocalPlayerId(id: string): void {
@@ -312,7 +360,10 @@ class WorldRenderer {
 
     for (const [id, avatar] of this.projectiles.entries()) {
       if (!seenProjectiles.has(id)) {
-        this.projectileGroup.remove(avatar.mesh);
+        if (avatar.shouldSpawnImpact()) {
+          const impactPosition = avatar.getPosition();
+          this.impactSystem.spawn(impactPosition.x, impactPosition.y, IMPACT_COLOR);
+        }
         avatar.dispose();
         this.projectiles.delete(id);
       }
@@ -341,6 +392,7 @@ class WorldRenderer {
     for (const orb of this.xpDrops.values()) {
       orb.update(deltaSeconds);
     }
+    this.impactSystem.update(deltaSeconds);
   }
 
   getLocalPlayerPosition(): Vector2 | null {
@@ -356,7 +408,6 @@ class WorldRenderer {
 
   private clearTransients(): void {
     for (const avatar of this.projectiles.values()) {
-      this.projectileGroup.remove(avatar.mesh);
       avatar.dispose();
     }
     this.projectiles.clear();
@@ -366,6 +417,7 @@ class WorldRenderer {
       orb.dispose();
     }
     this.xpDrops.clear();
+    this.impactSystem.clear();
   }
 }
 
@@ -602,7 +654,12 @@ class PlayerAvatar {
 
     const geometry = new PlaneGeometry(18, 24);
     geometry.rotateX(-Math.PI / 2);
-    this.material = new MeshBasicMaterial({ color: pickColor(id, isLocal), transparent: true });
+    this.material = new MeshBasicMaterial({
+      color: pickColor(id, isLocal),
+      map: PLAYER_TEXTURE,
+      transparent: true,
+      toneMapped: false
+    });
     this.material.depthWrite = false;
 
     this.body = new Mesh(geometry, this.material);
@@ -727,7 +784,13 @@ class EnemyAvatar {
 
     const bodyGeometry = new PlaneGeometry(20, 20);
     bodyGeometry.rotateX(-Math.PI / 2);
-    this.material = new MeshBasicMaterial({ color: ENEMY_COLORS[kind], transparent: true, opacity: 0.95 });
+    this.material = new MeshBasicMaterial({
+      color: ENEMY_COLORS[kind],
+      map: ENEMY_TEXTURES[kind],
+      transparent: true,
+      opacity: 0.95,
+      toneMapped: false
+    });
     this.material.depthWrite = false;
     this.body = new Mesh(bodyGeometry, this.material);
     this.body.position.y = PLAYER_HEIGHT * 0.8;
@@ -816,9 +879,16 @@ class ProjectileAvatar {
   private readonly material: MeshBasicMaterial;
   private displayTtl = PROJECTILE_LIFETIME;
   private initialized = false;
+  private readonly parent: Group;
+  private readonly trailGeometry: BufferGeometry;
+  private readonly trailMaterial: LineBasicMaterial;
+  private readonly trail: Line;
+  private readonly history: Vector2[] = [];
+  private serverTtl = PROJECTILE_LIFETIME;
 
   constructor(id: string, parent: Group) {
     this.id = id;
+    this.parent = parent;
     const geometry = new PlaneGeometry(12, 12);
     geometry.rotateX(-Math.PI / 2);
     this.material = new MeshBasicMaterial({
@@ -832,6 +902,20 @@ class ProjectileAvatar {
     this.mesh.position.y = PLAYER_HEIGHT * 0.9;
     this.mesh.renderOrder = 3;
     parent.add(this.mesh);
+
+    this.trailGeometry = new BufferGeometry();
+    const positions = new Float32Array(PROJECTILE_TRAIL_LENGTH * 3);
+    this.trailGeometry.setAttribute('position', new Float32BufferAttribute(positions, 3));
+    this.trailGeometry.setDrawRange(0, 0);
+    this.trailMaterial = new LineBasicMaterial({
+      color: 0x60a5fa,
+      transparent: true,
+      opacity: 0.55,
+      depthWrite: false
+    });
+    this.trail = new Line(this.trailGeometry, this.trailMaterial);
+    this.trail.renderOrder = 2;
+    parent.add(this.trail);
   }
 
   setState(x: number, y: number, vx: number, vy: number, ttl: number): void {
@@ -844,6 +928,7 @@ class ProjectileAvatar {
       this.targetFacing = Math.atan2(vy, vx);
     }
     this.displayTtl = ttl;
+    this.serverTtl = ttl;
   }
 
   update(deltaSeconds: number): void {
@@ -859,11 +944,129 @@ class ProjectileAvatar {
 
     this.mesh.position.set(this.currentPosition.x, PLAYER_HEIGHT * 0.9, this.currentPosition.y);
     this.mesh.rotation.y = -this.currentFacing + Math.PI / 2;
+
+    // Trail history (store most recent positions)
+    const latest = this.history[this.history.length - 1];
+    if (!latest || latest.distanceToSquared(this.currentPosition) > 4) {
+      this.history.push(this.currentPosition.clone());
+    } else {
+      latest.copy(this.currentPosition);
+    }
+    while (this.history.length > PROJECTILE_TRAIL_LENGTH) {
+      this.history.shift();
+    }
+
+    const drawCount = Math.min(this.history.length, PROJECTILE_TRAIL_LENGTH);
+    const positions = this.trailGeometry.getAttribute('position') as Float32BufferAttribute;
+    const array = positions.array as Float32Array;
+    for (let i = 0; i < PROJECTILE_TRAIL_LENGTH; i += 1) {
+      const point = this.history[this.history.length - 1 - i];
+      const idx = i * 3;
+      if (point) {
+        array[idx] = point.x;
+        array[idx + 1] = PLAYER_HEIGHT * 0.6;
+        array[idx + 2] = point.y;
+      } else {
+        array[idx] = this.currentPosition.x;
+        array[idx + 1] = PLAYER_HEIGHT * 0.6;
+        array[idx + 2] = this.currentPosition.y;
+      }
+    }
+    positions.needsUpdate = true;
+    this.trailGeometry.setDrawRange(0, Math.max(2, drawCount));
+    this.trail.visible = drawCount > 1;
+    this.trailMaterial.opacity = 0.2 + Math.min(0.5, drawCount / PROJECTILE_TRAIL_LENGTH);
   }
 
   dispose(): void {
+    this.parent.remove(this.mesh);
+    this.parent.remove(this.trail);
     this.mesh.geometry.dispose();
     this.material.dispose();
+    this.trailGeometry.dispose();
+    this.trailMaterial.dispose();
+    this.history.length = 0;
+  }
+
+  getPosition(): Vector2 {
+    return this.currentPosition.clone();
+  }
+
+  shouldSpawnImpact(): boolean {
+    return this.serverTtl > 0.08;
+  }
+}
+
+class ImpactSystem {
+  readonly group = new Group();
+  private readonly pool: Mesh[] = [];
+  private readonly active: Mesh[] = [];
+  private readonly geometry: PlaneGeometry;
+  private readonly baseTexture: CanvasTexture;
+
+  constructor() {
+    this.geometry = new PlaneGeometry(18, 18);
+    this.geometry.rotateX(-Math.PI / 2);
+    this.baseTexture = createRadialTexture('rgba(255,255,255,0.9)', 'rgba(144,205,244,0.35)', 'rgba(13,23,42,0)');
+  }
+
+  spawn(x: number, y: number, color: number): void {
+    const mesh = this.pool.pop() ?? this.createImpactMesh();
+    const material = mesh.material as MeshBasicMaterial;
+    material.color.setHex(color);
+    material.opacity = 0.8;
+    mesh.position.set(x, 1.4, y);
+    mesh.scale.setScalar(0.4);
+    mesh.userData.remaining = 0.28;
+    mesh.userData.initial = 0.28;
+    this.group.add(mesh);
+    this.active.push(mesh);
+  }
+
+  update(deltaSeconds: number): void {
+    for (let i = this.active.length - 1; i >= 0; i -= 1) {
+      const mesh = this.active[i];
+      mesh.userData.remaining -= deltaSeconds;
+      const remaining: number = mesh.userData.remaining;
+      const initial: number = mesh.userData.initial;
+      if (remaining <= 0) {
+        this.recycle(i);
+        continue;
+      }
+      const ratio = Math.max(0, Math.min(1, remaining / initial));
+      const scale = 0.5 + (1 - ratio) * 1.8;
+      mesh.scale.setScalar(scale);
+      (mesh.material as MeshBasicMaterial).opacity = 0.15 + ratio * 0.65;
+    }
+  }
+
+  clear(): void {
+    for (let i = this.active.length - 1; i >= 0; i -= 1) {
+      this.recycle(i);
+    }
+  }
+
+  private createImpactMesh(): Mesh {
+    const material = new MeshBasicMaterial({
+      map: this.baseTexture,
+      transparent: true,
+      blending: AdditiveBlending,
+      depthWrite: false,
+      toneMapped: false
+    });
+    const mesh = new Mesh(this.geometry, material);
+    mesh.renderOrder = 5;
+    mesh.userData.remaining = 0;
+    mesh.userData.initial = 0;
+    return mesh;
+  }
+
+  private recycle(index: number): void {
+    const mesh = this.active[index];
+    this.group.remove(mesh);
+    (mesh.material as MeshBasicMaterial).opacity = 0;
+    this.pool.push(mesh);
+    this.active.splice(index, 1);
   }
 }
 
@@ -922,6 +1125,103 @@ class XpOrb {
     this.mesh.geometry.dispose();
     this.material.dispose();
   }
+}
+
+function createChickenTexture(): CanvasTexture {
+  const size = 64;
+  const canvas = document.createElement('canvas');
+  canvas.width = size;
+  canvas.height = size;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) {
+    throw new Error('Failed to create chicken texture context');
+  }
+  ctx.imageSmoothingEnabled = false;
+  ctx.clearRect(0, 0, size, size);
+
+  const centerX = size / 2;
+  const centerY = size / 2 + 6;
+
+  ctx.fillStyle = '#fef3c7';
+  ctx.beginPath();
+  ctx.ellipse(centerX, centerY, size * 0.22, size * 0.28, 0, 0, Math.PI * 2);
+  ctx.fill();
+
+  ctx.fillStyle = '#fde68a';
+  ctx.beginPath();
+  ctx.ellipse(centerX - 6, centerY + 2, size * 0.14, size * 0.18, 0.3, 0, Math.PI * 2);
+  ctx.fill();
+
+  ctx.fillStyle = '#f87171';
+  ctx.beginPath();
+  ctx.moveTo(centerX, centerY - size * 0.32);
+  ctx.lineTo(centerX + size * 0.08, centerY - size * 0.18);
+  ctx.lineTo(centerX - size * 0.08, centerY - size * 0.18);
+  ctx.closePath();
+  ctx.fill();
+
+  ctx.fillStyle = '#1e293b';
+  ctx.beginPath();
+  ctx.arc(centerX + size * 0.05, centerY - size * 0.1, size * 0.04, 0, Math.PI * 2);
+  ctx.fill();
+
+  ctx.strokeStyle = 'rgba(250, 204, 21, 0.75)';
+  ctx.lineWidth = size * 0.08;
+  ctx.beginPath();
+  ctx.ellipse(centerX, centerY, size * 0.24, size * 0.32, 0, 0, Math.PI * 2);
+  ctx.stroke();
+
+  const texture = new CanvasTexture(canvas);
+  texture.magFilter = NearestFilter;
+  texture.minFilter = NearestFilter;
+  texture.needsUpdate = true;
+  return texture;
+}
+
+function createEnemyTextures(): Record<EnemyKind, CanvasTexture> {
+  return {
+    fox: createEnemyTexture('#fb923c', '#fde68a'),
+    hawk: createEnemyTexture('#bfdbfe', '#f8fafc'),
+    snake: createEnemyTexture('#4ade80', '#bbf7d0')
+  };
+}
+
+function createEnemyTexture(baseColor: string, highlightColor: string): CanvasTexture {
+  const size = 64;
+  const canvas = document.createElement('canvas');
+  canvas.width = size;
+  canvas.height = size;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) {
+    throw new Error('Failed to create enemy texture context');
+  }
+  ctx.imageSmoothingEnabled = false;
+  ctx.clearRect(0, 0, size, size);
+
+  const cx = size / 2;
+  const cy = size / 2 + 4;
+
+  ctx.fillStyle = baseColor;
+  ctx.beginPath();
+  ctx.ellipse(cx, cy, size * 0.25, size * 0.28, 0, 0, Math.PI * 2);
+  ctx.fill();
+
+  ctx.fillStyle = highlightColor;
+  ctx.beginPath();
+  ctx.ellipse(cx + 4, cy - 4, size * 0.12, size * 0.16, 0.4, 0, Math.PI * 2);
+  ctx.fill();
+
+  ctx.strokeStyle = 'rgba(255,255,255,0.55)';
+  ctx.lineWidth = size * 0.06;
+  ctx.beginPath();
+  ctx.ellipse(cx, cy, size * 0.27, size * 0.32, 0, 0, Math.PI * 2);
+  ctx.stroke();
+
+  const texture = new CanvasTexture(canvas);
+  texture.magFilter = NearestFilter;
+  texture.minFilter = NearestFilter;
+  texture.needsUpdate = true;
+  return texture;
 }
 
 function createRadialTexture(inner: string, mid: string, outer: string): CanvasTexture {

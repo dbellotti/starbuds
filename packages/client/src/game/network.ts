@@ -12,6 +12,7 @@ import {
 
 export type SnapshotListener = (snapshot: WorldSnapshot) => void;
 export type DisconnectListener = (event: CloseEvent | Event) => void;
+export type PingListener = (latencyMs: number) => void;
 
 interface WelcomeState {
   playerId: string;
@@ -27,8 +28,10 @@ export class GameNetwork {
   private playerSummaries: PlayerSummary[] = [];
   private readonly snapshotListeners = new Set<SnapshotListener>();
   private readonly disconnectListeners = new Set<DisconnectListener>();
+  private readonly pingListeners = new Set<PingListener>();
   private inputSequence = 0;
   private pingTimer: number | null = null;
+  private latestPingMs = 0;
 
   async connect(url: string, displayName: string): Promise<WelcomeState> {
     if (this.socket) {
@@ -114,6 +117,14 @@ export class GameNetwork {
     return () => this.disconnectListeners.delete(listener);
   }
 
+  onPing(listener: PingListener): () => void {
+    this.pingListeners.add(listener);
+    if (this.latestPingMs > 0) {
+      listener(this.latestPingMs);
+    }
+    return () => this.pingListeners.delete(listener);
+  }
+
   sendInput(state: InputMessage['state']): void {
     if (!this.socket || this.socket.readyState !== WebSocket.OPEN) {
       return;
@@ -130,6 +141,7 @@ export class GameNetwork {
     this.disposeSocket();
     this.snapshotListeners.clear();
     this.disconnectListeners.clear();
+    this.pingListeners.clear();
   }
 
   private disposeSocket(): void {
@@ -152,6 +164,7 @@ export class GameNetwork {
     this.welcome = null;
     this.level = null;
     this.playerSummaries = [];
+    this.latestPingMs = 0;
   }
 
   private handleMessage = (event: MessageEvent<string>) => {
@@ -172,6 +185,11 @@ export class GameNetwork {
         break;
       }
       case 'pong': {
+        const latency = performance.now() - message.time;
+        this.latestPingMs = latency;
+        for (const listener of this.pingListeners) {
+          listener(latency);
+        }
         break;
       }
       case 'welcome': {

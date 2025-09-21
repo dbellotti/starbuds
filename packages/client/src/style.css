@@ -33,6 +33,31 @@ canvas {
   transition: opacity 0.3s ease;
 }
 
+.debug-overlay {
+  position: absolute;
+  top: 16px;
+  left: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+  background: rgba(15, 23, 42, 0.7);
+  border: 1px solid rgba(148, 163, 184, 0.35);
+  border-radius: 6px;
+  font-family: 'Press Start 2P', system-ui, sans-serif;
+  font-size: 10px;
+  letter-spacing: 0.5px;
+  color: #cbd5f5;
+  z-index: 3;
+  pointer-events: none;
+}
+
+.debug-overlay-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+}
+
 .hud-damage-flash {
   position: absolute;
   inset: 0;

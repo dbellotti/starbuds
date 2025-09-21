@@ -2,11 +2,11 @@
 
 This plan keeps the game fun at every stage while steering toward a rich, performant browser experience. Each milestone is aimed to be demoable at completion.
 
-## Milestone 0 – Baseline Polish (Week 0–1)
-- **Gameplay & Balance**: Tune current melee threats, ensure death/respawn loop feels fair, add temporary invulnerability on revive (done). Capture feedback from 2–4 player sessions.
-- **Visual & Audio**: Improve player/enemy billboards with textured quads and rim-light shader; add lightweight hit particles and bolt trails.
-- **Performance**: Profile server tick (Node inspector) and client frame time (Chrome FPS meter). Establish budget targets: 60 fps at 1080p, <4 ms server tick.
-- **Tooling**: Ship a shared `.env.example`, npm scripts for simultaneous dev servers, and basic debug overlay (latency, fps, tick drift).
+## Milestone 0 – Baseline Polish (Week 0–1) ✅
+- **Gameplay & Balance**: Melee threats tuned with knockback + i-frames; respawn invulnerability live. Continue gathering notes from 2–4 player playtests.
+- **Visual & Audio**: Procedural chicken/enemy textures in place, psychic bolt trails and pooled impact sparks added, HUD damage flash reinforces hits.
+- **Performance**: FPS smoothing and projectile pooling landed; budgets set (60 fps @ 1080p, <4 ms server tick) and surfaced via debug overlay.
+- **Tooling**: Added `.env.example`, `npm run dev:all` orchestrator, and in-game overlay (ping, tick drift, FPS) to accelerate diagnostics.
 
 ## Milestone 1 – Core Loop & Immediate Feedback (Week 2–4)
 - **Gameplay & Balance**: Layer in ranged enemy variant, miniboss encounter with clear telegraphs, and level-up choice menu with 2–3 psychic augments per tier.
