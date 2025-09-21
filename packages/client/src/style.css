@@ -180,6 +180,170 @@ canvas {
   letter-spacing: 1px;
 }
 
+.hud-augment {
+  font-size: 10px;
+  color: #cbd5f5;
+  margin-top: 4px;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+}
+
+.hud-levelup {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 18px;
+  padding: 24px;
+  background: rgba(8, 12, 20, 0.84);
+  backdrop-filter: blur(2px);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.2s ease;
+  z-index: 4;
+  text-align: center;
+}
+
+.hud-levelup.is-visible {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.hud-levelup-title {
+  font-size: 14px;
+  color: #facc15;
+  text-shadow: 0 0 12px rgba(250, 204, 21, 0.4);
+}
+
+.hud-levelup-hint {
+  font-size: 10px;
+  color: rgba(226, 232, 240, 0.7);
+  text-transform: uppercase;
+  letter-spacing: 1px;
+}
+
+.hud-levelup-options {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  width: min(440px, 80vw);
+}
+
+.hud-levelup-option {
+  all: unset;
+  display: flex;
+  flex-direction: row;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 12px 16px;
+  border-radius: 10px;
+  border: 1px solid rgba(96, 165, 250, 0.5);
+  background: rgba(15, 23, 42, 0.92);
+  box-shadow: 0 0 18px rgba(37, 99, 235, 0.28);
+  cursor: pointer;
+  transition: transform 0.15s ease, border-color 0.15s ease;
+}
+
+.hud-levelup-option:hover {
+  transform: translateY(-2px);
+  border-color: rgba(96, 165, 250, 0.8);
+}
+
+.hud-levelup-option-index {
+  font-size: 13px;
+  color: #60a5fa;
+}
+
+.hud-levelup-option-body {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  text-align: left;
+  gap: 4px;
+}
+
+.hud-levelup-option-name {
+  font-size: 12px;
+  text-transform: uppercase;
+  color: #e0f2fe;
+  letter-spacing: 1px;
+}
+
+.hud-levelup-option-desc {
+  font-size: 11px;
+  color: rgba(226, 232, 240, 0.75);
+  margin-top: 4px;
+  letter-spacing: 0.5px;
+}
+
+.hud-levelup-option-index {
+  min-width: 24px;
+}
+
+.hud-levelup.is-processing .hud-levelup-option {
+  opacity: 0.6;
+  cursor: default;
+  transform: none;
+}
+
+.hud-levelup.is-processing .hud-levelup-option:hover {
+  border-color: rgba(96, 165, 250, 0.5);
+}
+
+.hud-toast {
+  position: absolute;
+  top: 18px;
+  right: 18px;
+  min-width: 220px;
+  padding: 12px 16px;
+  border-radius: 8px;
+  border: 1px solid rgba(148, 163, 184, 0.4);
+  background: rgba(15, 23, 42, 0.88);
+  box-shadow: 0 0 14px rgba(15, 23, 42, 0.45);
+  opacity: 0;
+  transform: translateY(-18px);
+  transition: opacity 0.18s ease, transform 0.18s ease;
+  pointer-events: none;
+  z-index: 4;
+}
+
+.hud-toast.is-visible {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+.hud-toast-headline {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  color: #e2e8f0;
+}
+
+.hud-toast-sub {
+  font-size: 9px;
+  margin-top: 4px;
+  color: rgba(226, 232, 240, 0.72);
+  letter-spacing: 1px;
+}
+
+.hud-toast.is-local {
+  border-color: rgba(74, 222, 128, 0.55);
+  box-shadow: 0 0 16px rgba(74, 222, 128, 0.25);
+}
+
+.hud-toast.is-ally {
+  border-color: rgba(96, 165, 250, 0.55);
+  box-shadow: 0 0 16px rgba(96, 165, 250, 0.2);
+}
+
+.hud-toast.is-boss {
+  border-color: rgba(248, 113, 113, 0.65);
+  box-shadow: 0 0 18px rgba(248, 113, 113, 0.25);
+  color: #fee2e2;
+}
+
 @keyframes hud-warning-pulse {
   from {
     transform: translateX(-50%) scale(1);

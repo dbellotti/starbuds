@@ -1,8 +1,19 @@
-import type { WorldSnapshot } from '@farsight/shared';
-import { PLAYER_HURT_FLASH_TIME } from '@farsight/shared';
+import type { AugmentId, AugmentOption, EnemyKind, WorldSnapshot } from '@farsight/shared';
+import { PLAYER_HURT_FLASH_TIME, getAugmentOption } from '@farsight/shared';
+
+interface LevelUpUiOffer {
+  offerId: string;
+  level: number;
+  options: AugmentOption[];
+}
 
 export interface Hud {
   update(snapshot: WorldSnapshot, playerId: string | null): void;
+  presentLevelUp(offer: LevelUpUiOffer, onSelect: (augmentId: AugmentId) => void): void;
+  lockLevelUp(): void;
+  clearLevelUp(): void;
+  showAugmentToast(augmentId: AugmentId, level: number, isLocal: boolean): void;
+  showBossSpawn(kind: EnemyKind): void;
   dispose(): void;
 }
 
@@ -38,13 +49,40 @@ export function createHud(parent: HTMLElement): Hud {
   const xpBar = createBar('XP', 'hud-xp');
   panel.appendChild(xpBar.container);
 
+  const augmentLabel = document.createElement('div');
+  augmentLabel.className = 'hud-augment';
+  augmentLabel.textContent = 'Augment: —';
+  panel.appendChild(augmentLabel);
+
   const tipLabel = document.createElement('div');
   tipLabel.className = 'hud-tip';
-  tipLabel.textContent = 'LMB: Psychic Bolt · WASD: Move';
+  tipLabel.textContent = 'LMB: Psychic Bolt · WASD: Move · V: Toggle View';
   panel.appendChild(tipLabel);
 
   const audio = createDamageAudio();
+  const levelUpOverlay = document.createElement('div');
+  levelUpOverlay.className = 'hud-levelup';
+  const levelUpTitle = document.createElement('div');
+  levelUpTitle.className = 'hud-levelup-title';
+  levelUpOverlay.appendChild(levelUpTitle);
+  const levelUpHint = document.createElement('div');
+  levelUpHint.className = 'hud-levelup-hint';
+  levelUpHint.textContent = 'Press 1-3 or click';
+  levelUpOverlay.appendChild(levelUpHint);
+  const levelUpOptions = document.createElement('div');
+  levelUpOptions.className = 'hud-levelup-options';
+  levelUpOverlay.appendChild(levelUpOptions);
+  root.appendChild(levelUpOverlay);
+
+  const toast = document.createElement('div');
+  toast.className = 'hud-toast';
+  root.appendChild(toast);
+
   let lastHurtTimer = 0;
+  let currentOffer: LevelUpUiOffer | null = null;
+  let offerHandler: ((augmentId: AugmentId) => void) | null = null;
+  let offerLocked = false;
+  let toastTimer: number | null = null;
 
   function update(snapshot: WorldSnapshot, playerId: string | null): void {
     if (!playerId) {
@@ -53,6 +91,8 @@ export function createHud(parent: HTMLElement): Hud {
       warningLabel.classList.remove('is-visible');
       panel.classList.remove('is-hurt', 'is-invulnerable');
       lastHurtTimer = 0;
+      augmentLabel.textContent = 'Augment: —';
+      clearLevelUp();
       return;
     }
 
@@ -63,6 +103,8 @@ export function createHud(parent: HTMLElement): Hud {
       warningLabel.classList.remove('is-visible');
       panel.classList.remove('is-hurt', 'is-invulnerable');
       lastHurtTimer = 0;
+      augmentLabel.textContent = 'Augment: —';
+      clearLevelUp();
       return;
     }
 
@@ -77,6 +119,13 @@ export function createHud(parent: HTMLElement): Hud {
       Math.max(1, player.experienceToNext),
       `${Math.round(player.experience)} / ${Math.round(player.experienceToNext)}`
     );
+
+    if (player.lastAugmentId) {
+      const augment = getAugmentOption(player.lastAugmentId);
+      augmentLabel.textContent = `Augment: ${augment.name}`;
+    } else {
+      augmentLabel.textContent = 'Augment: —';
+    }
 
     const hurtTimer = Math.max(0, player.hurtTimer ?? 0);
     const hurtRatio = PLAYER_HURT_FLASH_TIME > 0 ? Math.min(1, hurtTimer / PLAYER_HURT_FLASH_TIME) : 0;
@@ -93,12 +142,128 @@ export function createHud(parent: HTMLElement): Hud {
     warningLabel.classList.toggle('is-visible', targeted);
   }
 
+  function presentLevelUp(offer: LevelUpUiOffer, onSelect: (augmentId: AugmentId) => void): void {
+    currentOffer = offer;
+    offerHandler = onSelect;
+    offerLocked = false;
+    levelUpTitle.textContent = `Level ${offer.level} — Choose a surge`;
+    levelUpOptions.replaceChildren();
+    offer.options.forEach((option, index) => {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'hud-levelup-option';
+      button.dataset.index = String(index);
+      button.innerHTML = `
+        <span class="hud-levelup-option-index">${index + 1}</span>
+        <div class="hud-levelup-option-body">
+          <div class="hud-levelup-option-name">${option.name}</div>
+          <div class="hud-levelup-option-desc">${option.description}</div>
+        </div>`;
+      button.addEventListener('click', () => chooseAugment(option.id));
+      levelUpOptions.appendChild(button);
+    });
+    levelUpOverlay.classList.add('is-visible');
+    levelUpOverlay.classList.remove('is-processing');
+    root.style.pointerEvents = 'auto';
+  }
+
+  function lockLevelUp(): void {
+    if (!currentOffer) {
+      return;
+    }
+    offerLocked = true;
+    levelUpOverlay.classList.add('is-processing');
+    const buttons = levelUpOptions.querySelectorAll('button');
+    buttons.forEach((button) => {
+      (button as HTMLButtonElement).disabled = true;
+    });
+  }
+
+  function clearLevelUp(): void {
+    currentOffer = null;
+    offerHandler = null;
+    offerLocked = false;
+    levelUpOverlay.classList.remove('is-visible', 'is-processing');
+    levelUpOptions.replaceChildren();
+    root.style.pointerEvents = 'none';
+  }
+
+  function chooseAugment(augmentId: AugmentId): void {
+    if (!currentOffer || !offerHandler || offerLocked) {
+      return;
+    }
+    lockLevelUp();
+    offerHandler(augmentId);
+  }
+
+  function showAugmentToast(augmentId: AugmentId, level: number, isLocal: boolean): void {
+    const augment = getAugmentOption(augmentId);
+    const headline = isLocal ? `Unlocked ${augment.name}` : `Ally unlocked ${augment.name}`;
+    showToast(headline, `Level ${level}`, isLocal ? 'is-local' : 'is-ally');
+  }
+
+  function showBossSpawn(kind: EnemyKind): void {
+    const pretty = kind.charAt(0).toUpperCase() + kind.slice(1);
+    showToast('Miniboss inbound!', pretty, 'is-boss');
+  }
+
+  function showToast(headline: string, subline: string, tone: string): void {
+    toast.className = `hud-toast ${tone}`;
+    toast.innerHTML = `
+      <div class="hud-toast-headline">${headline}</div>
+      <div class="hud-toast-sub">${subline}</div>`;
+    toast.classList.add('is-visible');
+    if (toastTimer !== null) {
+      window.clearTimeout(toastTimer);
+    }
+    toastTimer = window.setTimeout(() => {
+      toast.classList.remove('is-visible');
+      toastTimer = null;
+    }, 2600);
+  }
+
+  function handleLevelUpKey(event: KeyboardEvent): void {
+    if (!currentOffer || offerLocked || !levelUpOverlay.classList.contains('is-visible')) {
+      return;
+    }
+    const map: Record<string, number> = {
+      Digit1: 0,
+      Numpad1: 0,
+      Digit2: 1,
+      Numpad2: 1,
+      Digit3: 2,
+      Numpad3: 2
+    };
+    const index = map[event.code];
+    if (index === undefined) {
+      return;
+    }
+    const option = currentOffer.options[index];
+    if (option) {
+      chooseAugment(option.id);
+    }
+  }
+
+  window.addEventListener('keydown', handleLevelUpKey);
+
   function dispose(): void {
     audio.dispose();
     root.remove();
+    window.removeEventListener('keydown', handleLevelUpKey);
+    if (toastTimer !== null) {
+      window.clearTimeout(toastTimer);
+    }
   }
 
-  return { update, dispose };
+  return {
+    update,
+    presentLevelUp,
+    lockLevelUp,
+    clearLevelUp,
+    showAugmentToast,
+    showBossSpawn,
+    dispose
+  };
 }
 
 interface DamageAudio {

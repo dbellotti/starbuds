@@ -1,18 +1,26 @@
 import {
+  AugmentAppliedMessage,
+  AugmentId,
+  BossSpawnedMessage,
+  ChooseAugmentMessage,
   ClientMessage,
   HelloMessage,
   InputMessage,
+  LevelData,
+  LevelUpOfferMessage,
   NETWORK_PROTOCOL_VERSION,
   PingMessage,
+  PlayerSummary,
   ServerMessage,
-  WorldSnapshot,
-  LevelData,
-  PlayerSummary
+  WorldSnapshot
 } from '@farsight/shared';
 
 export type SnapshotListener = (snapshot: WorldSnapshot) => void;
 export type DisconnectListener = (event: CloseEvent | Event) => void;
 export type PingListener = (latencyMs: number) => void;
+export type LevelUpOfferListener = (offer: LevelUpOfferMessage) => void;
+export type AugmentAppliedListener = (message: AugmentAppliedMessage) => void;
+export type BossSpawnListener = (message: BossSpawnedMessage) => void;
 
 interface WelcomeState {
   playerId: string;
@@ -29,6 +37,9 @@ export class GameNetwork {
   private readonly snapshotListeners = new Set<SnapshotListener>();
   private readonly disconnectListeners = new Set<DisconnectListener>();
   private readonly pingListeners = new Set<PingListener>();
+  private readonly levelUpListeners = new Set<LevelUpOfferListener>();
+  private readonly augmentListeners = new Set<AugmentAppliedListener>();
+  private readonly bossListeners = new Set<BossSpawnListener>();
   private inputSequence = 0;
   private pingTimer: number | null = null;
   private latestPingMs = 0;
@@ -125,6 +136,21 @@ export class GameNetwork {
     return () => this.pingListeners.delete(listener);
   }
 
+  onLevelUpOffer(listener: LevelUpOfferListener): () => void {
+    this.levelUpListeners.add(listener);
+    return () => this.levelUpListeners.delete(listener);
+  }
+
+  onAugmentApplied(listener: AugmentAppliedListener): () => void {
+    this.augmentListeners.add(listener);
+    return () => this.augmentListeners.delete(listener);
+  }
+
+  onBossSpawn(listener: BossSpawnListener): () => void {
+    this.bossListeners.add(listener);
+    return () => this.bossListeners.delete(listener);
+  }
+
   sendInput(state: InputMessage['state']): void {
     if (!this.socket || this.socket.readyState !== WebSocket.OPEN) {
       return;
@@ -137,11 +163,26 @@ export class GameNetwork {
     this.socket.send(JSON.stringify(message satisfies ClientMessage));
   }
 
+  chooseAugment(offerId: string, augmentId: AugmentId): void {
+    if (!this.socket || this.socket.readyState !== WebSocket.OPEN) {
+      return;
+    }
+    const message: ChooseAugmentMessage = {
+      type: 'choose-augment',
+      offerId,
+      augmentId
+    };
+    this.socket.send(JSON.stringify(message satisfies ClientMessage));
+  }
+
   dispose(): void {
     this.disposeSocket();
     this.snapshotListeners.clear();
     this.disconnectListeners.clear();
     this.pingListeners.clear();
+    this.levelUpListeners.clear();
+    this.augmentListeners.clear();
+    this.bossListeners.clear();
   }
 
   private disposeSocket(): void {
@@ -189,6 +230,24 @@ export class GameNetwork {
         this.latestPingMs = latency;
         for (const listener of this.pingListeners) {
           listener(latency);
+        }
+        break;
+      }
+      case 'level-up-offer': {
+        for (const listener of this.levelUpListeners) {
+          listener(message);
+        }
+        break;
+      }
+      case 'augment-applied': {
+        for (const listener of this.augmentListeners) {
+          listener(message);
+        }
+        break;
+      }
+      case 'boss-spawned': {
+        for (const listener of this.bossListeners) {
+          listener(message);
         }
         break;
       }

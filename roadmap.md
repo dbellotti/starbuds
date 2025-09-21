@@ -8,15 +8,15 @@ This plan keeps the game fun at every stage while steering toward a rich, perfor
 - **Performance**: FPS smoothing and projectile pooling landed; budgets set (60 fps @ 1080p, <4 ms server tick) and surfaced via debug overlay.
 - **Tooling**: Added `.env.example`, `npm run dev:all` orchestrator, and in-game overlay (ping, tick drift, FPS) to accelerate diagnostics.
 
-## Milestone 1 – Core Loop & Immediate Feedback (Week 2–4)
-- **Gameplay & Balance**: Layer in ranged enemy variant, miniboss encounter with clear telegraphs, and level-up choice menu with 2–3 psychic augments per tier.
-- **Visual & Audio**: Expand HUD with level-up summary, introduce additive projectile VFX, basic music loop, and per-event SFX (level-up chime, boss spawn).
-- **Camera Prototype**: Test lifted orthographic camera (completed) and build toggle to experiment with shallow perspective tilt without breaking aiming.
-- **Performance**: Implement enemy pooling and projectile reuse; capture WebGL allocations with Chrome Profiler after 15-minute session.
-- **Tooling**: Add hotkeys for debug camera toggle, capture deterministic seeds in logs, and create snapshot replay script for server simulations.
+## Milestone 1 – Core Loop & Immediate Feedback (Week 2–4) ✅
+- **Gameplay & Balance**: Added `raccoon` ranged foe with telegraphed bolts and `coyote` miniboss shockwaves; level-up picker surfaces 3 augment choices per tier with stat boosts and bolt splitting.
+- **Visual & Audio**: HUD gained level-up overlay, augment toasts, and low-fi background loop with level-up/boss SFX; projectile VFX tint per faction.
+- **Camera Prototype**: Key `V` toggles shallow tilt camera while preserving aiming + debug overlay readout.
+- **Performance**: Client/server now pool enemies/projectiles to cut allocations; per-projectile power influences trails.
+- **Tooling**: Logged level seeds on boot, wired camera hotkey prompt, and shipped `npm run replay:snapshots` for offline snapshot analysis.
 
 ## Milestone 2 – Co-op Utilities & Visual Foundations (Week 5–7)
-- **Gameplay & Balance**: Add roster panel, ready check, quick-chat ping wheel, and shared objective tracker (wave count, boss timer, extraction beacon).
+- **Gameplay & Balance**: Add roster panel, ready check, quick-chat ping wheel, and shared objective tracker (wave count, boss timer, extraction beacon) plus share teammate augment picks.
 - **Visual & Audio**: Replace floor tiles with biome-tinted atlases (barnyard, forest, lab). Add dynamic lighting pass (directional + ambient) and post-hit screen shake.
 - **3D Transition Prep**: Build modest low-poly chicken/enemy meshes (300–600 tris) and hook into billboard slots for testing; author texture guidelines in `docs/art-style.md`.
 - **Performance**: Introduce GPU instancing for tiles/props and move XP orb animations to shader uniforms. Add regression check using headless puppeteer script capturing FPS metrics.

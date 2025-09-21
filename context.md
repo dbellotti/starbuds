@@ -12,12 +12,14 @@
 - Networking: hello/welcome handshake with protocol guard, input → server → snapshot flow, ping keep-alive, client-side reconciliation hooks and latency callbacks.
 
 **Recent Feature Pass (committed)**
-- Combat loop: psychic bolts (cooldowns, speed, TTL), enemy damage/death, XP orbs with age decay, wave tuning by player count.
-- Progression data: `PlayerState` now includes name, level, health, XP, thresholds; server levels players and regenerates health on level-up.
-- HUD overlay: health/XP bars, level/name display, basic control tips; ambient decor (backdrop radial gradient, spawn glow, particles); projectile/XP visuals with additive blending.
+- Gameplay: Added `raccoon` ranged enemy and `coyote` miniboss with explosive shockwave telegraphs plus generous XP drops.
+- Progression: Level-up augment picker with four augments, server-side stat modifiers, and HUD overlay for option selection + last augment summary.
+- Feedback: New audio controller (lo-fi background loop, level-up & boss SFX), Key `V` camera tilt toggle mirrored in debug overlay and HUD tip.
+- Rendering: Projectile/enemy avatar pooling with faction-tinted VFX, per-faction impact colors, and boss-scaled textures.
+- Tooling: `npm run replay:snapshots` for offline snapshot analysis, level seed logging on server boot, HUD toasts for augment/boss events.
 
 **Baseline Polish (completed)**
-- Visual: Procedurally generated chicken/enemy textures applied to billboards, additive projectile trails, pooled impact bursts, and harm flicker tuning.
+- Visual: Procedural chicken/enemy textures, additive projectile trails, pooled impact bursts, and harm flicker tuning.
 - Feedback: Enemy telegraph-driven targeting markers, HUD damage flash, ping/tick drift debug overlay, smoother camera height for wider arena view.
 - Tooling: Added `.env.example` defaults and `npm run dev:all` runner for synchronized dev servers; network layer now exposes live latency metrics.
 
@@ -27,14 +29,15 @@
 - `npm run dev:all` (combined watcher for client + server)
 - Optional: `LEVEL_SEED=<int> npm run dev --workspace=@farsight/server`
 - Sanity: `npm run typecheck --workspaces` (clean)
+- Analysis: `npm run replay:snapshots -- logs/snapshots.json`
 - Copy `.env.example` → `.env` to override ports or server origin locally.
 
 **Open Threads / Next Steps**
-1. Milestone 1 gameplay: introduce ranged enemy variant, miniboss encounter, and level-up augment picker.
-2. UX polish: expand HUD with level-up summary, layer in level-up/boss SFX, iterate on projectile and impact VFX cadence.
-3. Co-op utilities: design roster/ready panels, lightweight ping wheel, and shared objective tracker.
-4. Visual foundations: begin biome tile set exploration, dynamic lighting prototype, author art bible for upcoming 3D transition.
-5. Performance & networking: instrument WebGL allocations, plan enemy pooling/server replay tooling, evaluate snapshot delta compression.
+1. Milestone 2 party play: roster/ready panels, lightweight ping wheel, shared objective tracker UI.
+2. Visual foundations: biome tile variants, dynamic lighting pass, art style guide for low-poly creatures.
+3. Co-op UX: in-game chat/pings and surfacing augment choices to teammates.
+4. Performance: GPU instancing for props, smoke-test automation, snapshot compression exploration.
+5. Networking/QA: reconnect path, snapshot replay tooling integration into CI, expand test matrix across hardware/browser combos.
 
 **Key Files (post-commit)**
 - Shared schema: `packages/shared/src/index.ts`

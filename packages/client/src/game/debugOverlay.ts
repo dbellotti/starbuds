@@ -1,6 +1,7 @@
 export interface DebugOverlay {
   updateRenderStats(fps: number): void;
   updateNetworkStats(stats: { pingMs?: number; tickDriftMs?: number; snapshotsPerSecond?: number }): void;
+  updateCameraMode(mode: string): void;
   dispose(): void;
 }
 
@@ -32,7 +33,15 @@ export function createDebugOverlay(parent: HTMLElement): DebugOverlay {
   tickValue.textContent = '--';
   tickRow.append(tickLabel, tickValue);
 
-  root.append(renderRow, networkRow, tickRow);
+  const cameraRow = document.createElement('div');
+  cameraRow.className = 'debug-overlay-row';
+  const cameraLabel = document.createElement('span');
+  cameraLabel.textContent = 'Cam';
+  const cameraValue = document.createElement('span');
+  cameraValue.textContent = 'Top';
+  cameraRow.append(cameraLabel, cameraValue);
+
+  root.append(renderRow, networkRow, tickRow, cameraRow);
   parent.appendChild(root);
 
   function formatNumber(value: number, digits = 0): string {
@@ -52,6 +61,9 @@ export function createDebugOverlay(parent: HTMLElement): DebugOverlay {
         const snapshots = snapshotsPerSecond ?? 0;
         tickValue.textContent = `${formatNumber(drift, 1)} ms · ${formatNumber(snapshots, 1)} Hz`;
       }
+    },
+    updateCameraMode(mode: string) {
+      cameraValue.textContent = mode;
     },
     dispose() {
       root.remove();

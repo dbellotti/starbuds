@@ -2,37 +2,41 @@ import { createServer } from 'node:http';
 import { randomUUID } from 'node:crypto';
 import { RawData, WebSocket, WebSocketServer } from 'ws';
 import {
+  AUGMENT_POOL,
   ClientMessage,
+  createInitialInputState,
   MAX_PLAYERS,
   NETWORK_PROTOCOL_VERSION,
-  ServerMessage,
-  TICK_RATE,
-  createInitialInputState,
   PlayerInputState,
   PlayerState,
   PlayerSummary,
-  WorldSnapshot,
-  EnemyState,
-  EnemyKind,
-  Vector2D,
-  ProjectileState,
-  XpDropState,
-  BASE_PLAYER_DAMAGE,
-  PROJECTILE_SPEED,
+  PROJECTILE_COOLDOWN,
   PROJECTILE_LIFETIME,
   PROJECTILE_RADIUS,
-  PROJECTILE_COOLDOWN,
-  ENEMY_XP_VALUES,
-  ENEMY_ATTACK_DAMAGE,
-  ENEMY_ATTACK_RANGE,
-  ENEMY_ATTACK_WINDUP,
-  ENEMY_ATTACK_RECOVERY,
-  ENEMY_ATTACK_COOLDOWN,
+  PROJECTILE_SPEED,
   PLAYER_HURT_FLASH_TIME,
   PLAYER_INVULNERABILITY_TIME,
+  ServerMessage,
+  TICK_RATE,
+  WorldSnapshot,
+  EnemyKind,
+  EnemyState,
+  ProjectileState,
+  Vector2D,
+  XpDropState,
+  BASE_PLAYER_DAMAGE,
+  ENEMY_ATTACK_COOLDOWN,
+  ENEMY_ATTACK_DAMAGE,
+  ENEMY_ATTACK_RANGE,
+  ENEMY_ATTACK_RECOVERY,
+  ENEMY_ATTACK_WINDUP,
+  ENEMY_XP_VALUES,
   generateLevel,
   LevelData,
-  TILE_SIZE
+  TILE_SIZE,
+  AugmentId,
+  getAugmentOption,
+  ProjectileFaction
 } from '@farsight/shared';
 
 const TICK_INTERVAL_MS = 1000 / TICK_RATE;
@@ -46,6 +50,12 @@ const LEVEL_CONFIG = {
 };
 
 
+interface AugmentOffer {
+  id: string;
+  level: number;
+  options: AugmentId[];
+}
+
 type PlayerSimState = PlayerState & {
   input: PlayerInputState;
   primaryCooldown: number;
@@ -55,19 +65,36 @@ type PlayerSimState = PlayerState & {
   maxHealth: number;
   hurtTimer: number;
   invulnerableTimer: number;
+  damageMultiplier: number;
+  cooldownMultiplier: number;
+  projectileSpeedMultiplier: number;
+  splitShots: number;
+  healthGrowthMultiplier: number;
+  pendingAugments: AugmentOffer[];
+  augments: AugmentId[];
+  lastAugmentId: AugmentId | null;
 };
 
 type EnemySimState = EnemyState & {
   wanderDirection: Vector2D;
   switchTimer: number;
   attackCooldown: number;
+  isBoss: boolean;
 };
 
 type ProjectileSimState = ProjectileState & {
   ttl: number;
+  damage: number;
+  maxSplits: number;
+  splitDepth: number;
+  radius: number;
 };
 
 type XpDropSimState = XpDropState;
+
+type WorldEvent =
+  | { type: 'broadcast'; message: ServerMessage }
+  | { type: 'target'; targetId: string; message: ServerMessage };
 
 class GameWorld {
   tick = 0;
@@ -79,11 +106,18 @@ class GameWorld {
   private spawnCursor = 0;
   private enemySpawnAccumulator = 0;
   private readonly walkableTiles: Array<{ x: number; y: number }>;
+  private readonly events: WorldEvent[] = [];
+  private readonly projectilePool: ProjectileSimState[] = [];
+  private readonly enemyPool: EnemySimState[] = [];
+  private minibossSpawnTimer = 0;
+  private nextMinibossInterval = 55;
 
   constructor() {
     this.level = generateLevel(LEVEL_CONFIG);
     this.walkableTiles = collectWalkableTiles(this.level);
     this.spawnInitialEnemies();
+    this.nextMinibossInterval = 55 + Math.random() * 35;
+    console.log(`level seed: ${this.level.seed}`);
   }
 
   addPlayer(id: string, displayName: string): PlayerSimState {
@@ -102,7 +136,15 @@ class GameWorld {
       health: 120,
       maxHealth: 120,
       hurtTimer: 0,
-      invulnerableTimer: 0
+      invulnerableTimer: 0,
+      damageMultiplier: 1,
+      cooldownMultiplier: 1,
+      projectileSpeedMultiplier: 1,
+      splitShots: 0,
+      healthGrowthMultiplier: 1,
+      pendingAugments: [],
+      augments: [],
+      lastAugmentId: null
     };
     this.players.set(id, player);
     return player;
@@ -132,6 +174,7 @@ class GameWorld {
     }
 
     this.updateEnemies(deltaSeconds);
+    this.trySpawnMiniboss(deltaSeconds);
     this.updateProjectiles(deltaSeconds);
     this.updateXpDrops(deltaSeconds);
   }
@@ -151,7 +194,8 @@ class GameWorld {
         experience: player.experience,
         experienceToNext: player.experienceToNext,
         hurtTimer: player.hurtTimer,
-        invulnerableTimer: player.invulnerableTimer
+        invulnerableTimer: player.invulnerableTimer,
+        lastAugmentId: player.lastAugmentId
       })),
       enemies: Array.from(this.enemies.values()).map(({ wanderDirection: _wd, switchTimer: _st, attackCooldown: _ac, ...enemy }) => ({
         ...enemy
@@ -159,9 +203,11 @@ class GameWorld {
       projectiles: Array.from(this.projectiles.values()).map((projectile) => ({
         id: projectile.id,
         ownerId: projectile.ownerId,
+        faction: projectile.faction,
         position: projectile.position,
         velocity: projectile.velocity,
-        ttl: projectile.ttl
+        ttl: projectile.ttl,
+        power: projectile.power
       })),
       xpDrops: Array.from(this.xpDrops.values()).map((drop) => ({
         id: drop.id,
@@ -170,6 +216,15 @@ class GameWorld {
         age: drop.age
       }))
     };
+  }
+
+  drainEvents(): WorldEvent[] {
+    if (this.events.length === 0) {
+      return [];
+    }
+    const copy = this.events.slice();
+    this.events.length = 0;
+    return copy;
   }
 
   private pickSpawnPoint(): { x: number; y: number } {
@@ -183,7 +238,7 @@ class GameWorld {
   }
 
   private spawnInitialEnemies(): void {
-    const kinds: EnemyKind[] = ['fox', 'snake', 'hawk'];
+    const kinds: EnemyKind[] = ['fox', 'snake', 'hawk', 'raccoon'];
     const initialCount = 12;
     for (let i = 0; i < initialCount; i += 1) {
       const kind = kinds[i % kinds.length];
@@ -199,12 +254,14 @@ class GameWorld {
       this.enemySpawnAccumulator = 0;
       const rollSeed = Math.random();
       let roll: EnemyKind;
-      if (rollSeed < 0.45) {
+      if (rollSeed < 0.35) {
         roll = 'fox';
-      } else if (rollSeed < 0.75) {
+      } else if (rollSeed < 0.6) {
         roll = 'snake';
-      } else {
+      } else if (rollSeed < 0.85) {
         roll = 'hawk';
+      } else {
+        roll = 'raccoon';
       }
       this.spawnEnemy(roll);
     }
@@ -219,11 +276,15 @@ class GameWorld {
         enemy.intentTimer = Math.max(0, enemy.intentTimer - deltaSeconds);
       }
 
+      const target = this.pickEnemyTarget(enemy, players);
+      const isRanged = enemy.kind === 'raccoon';
+      const isBoss = enemy.isBoss;
+
       if (enemy.intent === 'windup') {
         enemy.velocity.x = 0;
         enemy.velocity.y = 0;
         if (enemy.intentTimer <= 0) {
-          this.resolveEnemyAttack(enemy, players);
+          this.resolveEnemyAttack(enemy, players, target ?? null);
           enemy.intent = 'recover';
           enemy.intentDuration = getEnemyAttackRecovery(enemy.kind);
           enemy.intentTimer = enemy.intentDuration;
@@ -235,22 +296,39 @@ class GameWorld {
           enemy.intentDuration = 0;
           enemy.targetPlayerId = null;
         }
-      }
-
-      if (enemy.intent === 'idle') {
+      } else {
         if (enemy.switchTimer <= 0) {
-          enemy.switchTimer = 1.5 + Math.random() * 2;
-          enemy.wanderDirection = this.selectEnemyDirection(enemy, players);
+          if (isRanged && target) {
+            const dx = target.position.x - enemy.position.x;
+            const dy = target.position.y - enemy.position.y;
+            const length = Math.hypot(dx, dy) || 1;
+            const strafe = { x: -dy / length, y: dx / length };
+            const dir = Math.random() < 0.5 ? strafe : { x: -strafe.x, y: -strafe.y };
+            enemy.wanderDirection = dir;
+            enemy.switchTimer = 0.75 + Math.random() * 0.45;
+          } else {
+            const base = (isBoss ? 1.1 : 1.5) + Math.random() * (isBoss ? 1.2 : 2);
+            enemy.switchTimer = base;
+            enemy.wanderDirection = this.selectEnemyDirection(enemy, players);
+          }
         }
 
-        const target = this.pickEnemyTarget(enemy, players);
         if (target) {
           const dx = target.position.x - enemy.position.x;
           const dy = target.position.y - enemy.position.y;
           const distance = Math.hypot(dx, dy);
           if (enemy.attackCooldown <= 0 && distance <= enemy.attackRange) {
             this.beginEnemyWindup(enemy, target);
-          } else if (distance < enemy.attackRange * 1.35) {
+          } else if (isRanged) {
+            const length = distance || 1;
+            const desiredMin = enemy.attackRange * 0.55;
+            const desiredMax = enemy.attackRange * 0.95;
+            if (distance < desiredMin) {
+              enemy.wanderDirection = { x: -dx / length, y: -dy / length };
+            } else if (distance > desiredMax) {
+              enemy.wanderDirection = { x: dx / length, y: dy / length };
+            }
+          } else if (distance < enemy.attackRange * 1.4) {
             const length = distance || 1;
             enemy.wanderDirection = { x: dx / length, y: dy / length };
           }
@@ -262,8 +340,11 @@ class GameWorld {
       if (enemy.intent === 'windup') {
         speedScale = 0;
       } else if (enemy.intent === 'recover') {
-        speedScale = 0.4;
+        speedScale = isBoss ? 0.55 : 0.4;
+      } else if (isRanged && target) {
+        speedScale = 0.85;
       }
+
       enemy.velocity = {
         x: enemy.wanderDirection.x * speed * speedScale,
         y: enemy.wanderDirection.y * speed * speedScale
@@ -274,6 +355,47 @@ class GameWorld {
 
       clampToLevel(enemy.position, this.level);
     }
+  }
+
+  private trySpawnMiniboss(deltaSeconds: number): void {
+    if (this.players.size === 0) {
+      this.minibossSpawnTimer = 0;
+      return;
+    }
+
+    if (this.hasActiveMiniboss()) {
+      this.minibossSpawnTimer = 0;
+      return;
+    }
+
+    this.minibossSpawnTimer += deltaSeconds;
+    if (this.minibossSpawnTimer < this.nextMinibossInterval) {
+      return;
+    }
+
+    this.minibossSpawnTimer = 0;
+    this.nextMinibossInterval = 55 + Math.random() * 35;
+    const boss = this.spawnEnemy('coyote');
+    if (boss) {
+      this.events.push({
+        type: 'broadcast',
+        message: {
+          type: 'boss-spawned',
+          bossId: boss.id,
+          kind: boss.kind
+        }
+      });
+      console.log('miniboss spawned', boss.id);
+    }
+  }
+
+  private hasActiveMiniboss(): boolean {
+    for (const enemy of this.enemies.values()) {
+      if (enemy.isBoss) {
+        return true;
+      }
+    }
+    return false;
   }
 
   private selectEnemyDirection(enemy: EnemySimState, players: Iterable<PlayerSimState>): Vector2D {
@@ -329,19 +451,33 @@ class GameWorld {
     enemy.switchTimer = 0.5;
   }
 
-  private resolveEnemyAttack(enemy: EnemySimState, players: PlayerSimState[]): void {
+  private resolveEnemyAttack(enemy: EnemySimState, players: PlayerSimState[], target: PlayerSimState | null): void {
+    if (enemy.kind === 'raccoon') {
+      const focus = target ?? (enemy.targetPlayerId ? this.players.get(enemy.targetPlayerId) ?? null : null);
+      if (focus) {
+        this.spawnEnemyProjectile(enemy, focus.position, 'enemy');
+      }
+      return;
+    }
+
     const range = enemy.attackRange;
     const damage = getEnemyAttackDamage(enemy.kind);
     for (const player of players) {
       const dx = player.position.x - enemy.position.x;
       const dy = player.position.y - enemy.position.y;
       if (dx * dx + dy * dy <= range * range) {
-        this.damagePlayer(player, damage, enemy.position);
+        const knockback = enemy.isBoss ? 110 : 42;
+        const amount = enemy.isBoss ? Math.round(damage * 1.1) : damage;
+        this.damagePlayer(player, amount, enemy.position, knockback);
       }
+    }
+
+    if (enemy.isBoss) {
+      this.spawnBossShockwave(enemy);
     }
   }
 
-  private damagePlayer(player: PlayerSimState, amount: number, origin: Vector2D): void {
+  private damagePlayer(player: PlayerSimState, amount: number, origin: Vector2D, knockbackOverride?: number): void {
     if (player.invulnerableTimer > 0) {
       return;
     }
@@ -352,7 +488,7 @@ class GameWorld {
     const dx = player.position.x - origin.x;
     const dy = player.position.y - origin.y;
     const distance = Math.hypot(dx, dy) || 1;
-    const knockback = 42;
+    const knockback = knockbackOverride ?? 42;
     player.position.x += (dx / distance) * knockback;
     player.position.y += (dy / distance) * knockback;
     clampToLevel(player.position, this.level);
@@ -372,51 +508,118 @@ class GameWorld {
     player.invulnerableTimer = Math.max(player.invulnerableTimer, PLAYER_INVULNERABILITY_TIME * 2.5);
   }
 
-  private spawnEnemy(kind: EnemyKind): void {
+  private spawnEnemy(kind: EnemyKind): EnemySimState | null {
     const tile = randomWalkableTile(this.walkableTiles);
-    const position = tileToWorld(tile.x + 0.5, tile.y + 0.5, this.level);
-    const id = randomUUID();
-    const enemy: EnemySimState = {
-      id,
-      kind,
-      position,
+    const worldPosition = tileToWorld(tile.x + 0.5, tile.y + 0.5, this.level);
+    const enemy = this.acquireEnemy();
+    enemy.id = randomUUID();
+    enemy.kind = kind;
+    enemy.isBoss = kind === 'coyote';
+    enemy.position.x = worldPosition.x;
+    enemy.position.y = worldPosition.y;
+    enemy.velocity.x = 0;
+    enemy.velocity.y = 0;
+    enemy.health = getEnemyMaxHealth(kind);
+    enemy.maxHealth = enemy.health;
+    enemy.wanderDirection.x = 0;
+    enemy.wanderDirection.y = 0;
+    enemy.switchTimer = 0;
+    enemy.attackCooldown = Math.random() * (enemy.isBoss ? 1.5 : 0.5);
+    enemy.intent = 'idle';
+    enemy.intentTimer = 0;
+    enemy.intentDuration = 0;
+    enemy.attackRange = getEnemyAttackRange(kind);
+    enemy.targetPlayerId = null;
+    this.enemies.set(enemy.id, enemy);
+    return enemy;
+  }
+
+  private acquireEnemy(): EnemySimState {
+    const pooled = this.enemyPool.pop();
+    if (pooled) {
+      return pooled;
+    }
+    return {
+      id: '',
+      kind: 'fox',
+      position: { x: 0, y: 0 },
       velocity: { x: 0, y: 0 },
-      health: getEnemyMaxHealth(kind),
-      maxHealth: getEnemyMaxHealth(kind),
-      wanderDirection: { x: 0, y: 0 },
-      switchTimer: 0,
-      attackCooldown: Math.random() * 0.5,
+      health: 0,
+      maxHealth: 0,
       intent: 'idle',
       intentTimer: 0,
       intentDuration: 0,
-      attackRange: getEnemyAttackRange(kind),
-      targetPlayerId: null
+      attackRange: 0,
+      targetPlayerId: null,
+      wanderDirection: { x: 0, y: 0 },
+      switchTimer: 0,
+      attackCooldown: 0,
+      isBoss: false
     };
-    this.enemies.set(id, enemy);
+  }
+
+  private recycleEnemy(enemy: EnemySimState): void {
+    enemy.id = '';
+    enemy.targetPlayerId = null;
+    enemy.isBoss = false;
+    this.enemyPool.push(enemy);
   }
 
   private firePrimary(player: PlayerSimState): void {
     const angle = player.input.aimDirection;
     const dirX = Math.cos(angle);
     const dirY = Math.sin(angle);
-    const originX = player.position.x + dirX * PROJECTILE_RADIUS;
-    const originY = player.position.y + dirY * PROJECTILE_RADIUS;
-    const id = randomUUID();
-    const projectile: ProjectileSimState = {
-      id,
-      ownerId: player.id,
-      position: { x: originX, y: originY },
-      velocity: { x: dirX * PROJECTILE_SPEED, y: dirY * PROJECTILE_SPEED },
-      ttl: PROJECTILE_LIFETIME
+    const originX = player.position.x + dirX * (PROJECTILE_RADIUS * 0.7);
+    const originY = player.position.y + dirY * (PROJECTILE_RADIUS * 0.7);
+    const projectile = this.acquireProjectile();
+    projectile.id = randomUUID();
+    projectile.ownerId = player.id;
+    projectile.faction = 'player';
+    const speed = PROJECTILE_SPEED * player.projectileSpeedMultiplier;
+    projectile.velocity.x = dirX * speed;
+    projectile.velocity.y = dirY * speed;
+    projectile.position.x = originX;
+    projectile.position.y = originY;
+    projectile.ttl = PROJECTILE_LIFETIME;
+    projectile.damage = Math.round(BASE_PLAYER_DAMAGE * player.damageMultiplier);
+    projectile.power = projectile.damage;
+    projectile.maxSplits = player.splitShots;
+    projectile.splitDepth = 0;
+    projectile.radius = PROJECTILE_RADIUS;
+    this.projectiles.set(projectile.id, projectile);
+    player.primaryCooldown = PROJECTILE_COOLDOWN * player.cooldownMultiplier;
+  }
+
+  private acquireProjectile(): ProjectileSimState {
+    const pooled = this.projectilePool.pop();
+    if (pooled) {
+      return pooled;
+    }
+    return {
+      id: '',
+      ownerId: '',
+      faction: 'player',
+      position: { x: 0, y: 0 },
+      velocity: { x: 0, y: 0 },
+      ttl: 0,
+      power: 0,
+      damage: 0,
+      maxSplits: 0,
+      splitDepth: 0,
+      radius: PROJECTILE_RADIUS
     };
-    this.projectiles.set(id, projectile);
-    player.primaryCooldown = PROJECTILE_COOLDOWN;
+  }
+
+  private recycleProjectile(projectile: ProjectileSimState): void {
+    projectile.id = '';
+    projectile.ownerId = '';
+    projectile.faction = 'player';
+    this.projectilePool.push(projectile);
   }
 
   private updateProjectiles(deltaSeconds: number): void {
     const expired: string[] = [];
     const enemyIdsToRemove: string[] = [];
-    const projectileRadiusSq = PROJECTILE_RADIUS * PROJECTILE_RADIUS;
 
     for (const projectile of this.projectiles.values()) {
       projectile.ttl -= deltaSeconds;
@@ -428,22 +631,48 @@ class GameWorld {
         continue;
       }
 
-      for (const enemy of this.enemies.values()) {
-        const dx = enemy.position.x - projectile.position.x;
-        const dy = enemy.position.y - projectile.position.y;
-        if (dx * dx + dy * dy <= projectileRadiusSq) {
-          enemy.health -= BASE_PLAYER_DAMAGE;
-          expired.push(projectile.id);
-          if (enemy.health <= 0) {
-            enemyIdsToRemove.push(enemy.id);
+      const radiusSq = projectile.radius * projectile.radius;
+
+      if (projectile.faction === 'player') {
+        for (const enemy of this.enemies.values()) {
+          const dx = enemy.position.x - projectile.position.x;
+          const dy = enemy.position.y - projectile.position.y;
+          if (dx * dx + dy * dy <= radiusSq) {
+            enemy.health -= projectile.damage;
+            if (projectile.maxSplits > projectile.splitDepth) {
+              this.spawnSplitProjectiles(projectile, enemy.position);
+            }
+            expired.push(projectile.id);
+            if (enemy.health <= 0) {
+              enemyIdsToRemove.push(enemy.id);
+            }
+            break;
           }
-          break;
+        }
+      } else {
+        for (const player of this.players.values()) {
+          if (player.invulnerableTimer > 0) {
+            continue;
+          }
+          const dx = player.position.x - projectile.position.x;
+          const dy = player.position.y - projectile.position.y;
+          if (dx * dx + dy * dy <= radiusSq) {
+            const knockback = projectile.faction === 'boss' ? 96 : 48;
+            this.damagePlayer(player, projectile.damage, projectile.position, knockback);
+            expired.push(projectile.id);
+            break;
+          }
         }
       }
     }
 
     for (const id of expired) {
+      const projectile = this.projectiles.get(id);
+      if (!projectile) {
+        continue;
+      }
       this.projectiles.delete(id);
+      this.recycleProjectile(projectile);
     }
 
     for (const enemyId of enemyIdsToRemove) {
@@ -455,6 +684,65 @@ class GameWorld {
     }
   }
 
+  private spawnSplitProjectiles(source: ProjectileSimState, impactPosition: Vector2D): void {
+    const speed = Math.hypot(source.velocity.x, source.velocity.y) || PROJECTILE_SPEED;
+    const baseAngle = Math.atan2(source.velocity.y, source.velocity.x);
+    const offsets = [-0.4, 0.4];
+    for (const offset of offsets) {
+      const projectile = this.acquireProjectile();
+      const angle = baseAngle + offset;
+      projectile.id = randomUUID();
+      projectile.ownerId = source.ownerId;
+      projectile.faction = source.faction;
+      projectile.velocity.x = Math.cos(angle) * speed * 0.9;
+      projectile.velocity.y = Math.sin(angle) * speed * 0.9;
+      projectile.position.x = impactPosition.x + Math.cos(angle) * PROJECTILE_RADIUS * 0.6;
+      projectile.position.y = impactPosition.y + Math.sin(angle) * PROJECTILE_RADIUS * 0.6;
+      projectile.ttl = Math.min(PROJECTILE_LIFETIME * 0.7, source.ttl + 0.2);
+      projectile.damage = Math.max(8, Math.round(source.damage * 0.7));
+      projectile.power = projectile.damage;
+      projectile.maxSplits = source.maxSplits;
+      projectile.splitDepth = source.splitDepth + 1;
+      projectile.radius = Math.max(12, source.radius * 0.85);
+      this.projectiles.set(projectile.id, projectile);
+    }
+  }
+
+  private spawnEnemyProjectile(enemy: EnemySimState, target: Vector2D, faction: ProjectileFaction = enemy.isBoss ? 'boss' : 'enemy'): void {
+    const projectile = this.acquireProjectile();
+    projectile.id = randomUUID();
+    projectile.ownerId = enemy.id;
+    projectile.faction = faction;
+    const dx = target.x - enemy.position.x;
+    const dy = target.y - enemy.position.y;
+    const angle = Math.atan2(dy, dx);
+    const speed = faction === 'boss' ? 240 : 320;
+    projectile.velocity.x = Math.cos(angle) * speed;
+    projectile.velocity.y = Math.sin(angle) * speed;
+    projectile.position.x = enemy.position.x + Math.cos(angle) * 18;
+    projectile.position.y = enemy.position.y + Math.sin(angle) * 18;
+    projectile.ttl = faction === 'boss' ? 1.1 : 1.6;
+    const baseDamage = getEnemyAttackDamage(enemy.kind);
+    projectile.damage = faction === 'boss' ? Math.round(baseDamage * 0.65) : baseDamage;
+    projectile.power = projectile.damage;
+    projectile.maxSplits = 0;
+    projectile.splitDepth = 0;
+    projectile.radius = faction === 'boss' ? PROJECTILE_RADIUS * 1.15 : PROJECTILE_RADIUS * 0.75;
+    this.projectiles.set(projectile.id, projectile);
+  }
+
+  private spawnBossShockwave(enemy: EnemySimState): void {
+    const bolts = 6;
+    for (let i = 0; i < bolts; i += 1) {
+      const angle = (Math.PI * 2 * i) / bolts;
+      const target = {
+        x: enemy.position.x + Math.cos(angle) * 32,
+        y: enemy.position.y + Math.sin(angle) * 32
+      };
+      this.spawnEnemyProjectile(enemy, target, 'boss');
+    }
+  }
+
   private updateXpDrops(deltaSeconds: number): void {
     const collected: string[] = [];
     for (const drop of this.xpDrops.values()) {
@@ -463,7 +751,7 @@ class GameWorld {
         const dx = player.position.x - drop.position.x;
         const dy = player.position.y - drop.position.y;
         if (dx * dx + dy * dy <= (TILE_SIZE * 0.6) ** 2) {
-          grantExperience(player, drop.amount);
+          this.grantExperience(player, drop.amount);
           collected.push(drop.id);
           break;
         }
@@ -483,8 +771,22 @@ class GameWorld {
 
   private handleEnemyDeath(enemy: EnemySimState): void {
     this.enemies.delete(enemy.id);
-    const xpAmount = ENEMY_XP_VALUES[enemy.kind] ?? 10;
-    this.spawnXpDrop(enemy.position, xpAmount);
+    const baseAmount = ENEMY_XP_VALUES[enemy.kind] ?? 10;
+    if (enemy.isBoss) {
+      const slices = 6;
+      for (let i = 0; i < slices; i += 1) {
+        const angle = (Math.PI * 2 * i) / slices;
+        const offset = 28;
+        const dropPosition = {
+          x: enemy.position.x + Math.cos(angle) * offset,
+          y: enemy.position.y + Math.sin(angle) * offset
+        };
+        this.spawnXpDrop(dropPosition, Math.round(baseAmount / slices));
+      }
+    } else {
+      this.spawnXpDrop(enemy.position, baseAmount);
+    }
+    this.recycleEnemy(enemy);
   }
 
   private spawnXpDrop(position: Vector2D, amount: number): void {
@@ -496,6 +798,122 @@ class GameWorld {
       age: 0
     };
     this.xpDrops.set(id, drop);
+  }
+
+  chooseAugment(playerId: string, offerId: string, augmentId: AugmentId): boolean {
+    const player = this.players.get(playerId);
+    if (!player) {
+      return false;
+    }
+    const offerIndex = player.pendingAugments.findIndex((offer) => offer.id === offerId);
+    if (offerIndex === -1) {
+      return false;
+    }
+    const offer = player.pendingAugments[offerIndex];
+    if (!offer.options.includes(augmentId)) {
+      return false;
+    }
+    player.pendingAugments.splice(offerIndex, 1);
+    this.applyAugment(player, augmentId);
+    return true;
+  }
+
+  private grantExperience(player: PlayerSimState, amount: number): void {
+    player.experience += amount;
+    while (player.experience >= player.experienceToNext) {
+      player.experience -= player.experienceToNext;
+      player.psychicLevel += 1;
+      const healthGain = Math.round(15 * player.healthGrowthMultiplier);
+      player.maxHealth += healthGain;
+      player.health = Math.min(player.maxHealth, player.health + Math.round(player.maxHealth * 0.35));
+      player.experienceToNext = Math.round(player.experienceToNext * 1.25 + 40);
+      this.queueAugmentOffer(player);
+    }
+  }
+
+  private queueAugmentOffer(player: PlayerSimState): void {
+    const options = this.pickAugmentOptions(player);
+    const offer: AugmentOffer = {
+      id: randomUUID(),
+      level: player.psychicLevel,
+      options
+    };
+    player.pendingAugments.push(offer);
+    this.events.push({
+      type: 'target',
+      targetId: player.id,
+      message: {
+        type: 'level-up-offer',
+        playerId: player.id,
+        offerId: offer.id,
+        level: offer.level,
+        options: options.map(getAugmentOption)
+      }
+    });
+  }
+
+  private pickAugmentOptions(player: PlayerSimState): AugmentId[] {
+    const pool = [...AUGMENT_POOL];
+    for (let i = pool.length - 1; i > 0; i -= 1) {
+      const j = Math.floor(Math.random() * (i + 1));
+      const temp = pool[i];
+      pool[i] = pool[j];
+      pool[j] = temp;
+    }
+    const taken = new Set(player.augments);
+    const allowDuplicates = taken.size >= AUGMENT_POOL.length - 1;
+    const desired = player.psychicLevel <= 2 ? Math.min(2, AUGMENT_POOL.length) : Math.min(3, AUGMENT_POOL.length);
+    const options: AugmentId[] = [];
+    for (const id of pool) {
+      if (!taken.has(id) || allowDuplicates) {
+        options.push(id);
+      }
+      if (options.length >= desired) {
+        break;
+      }
+    }
+    while (options.length < desired) {
+      options.push(pool[Math.floor(Math.random() * pool.length)]);
+    }
+    return options;
+  }
+
+  private applyAugment(player: PlayerSimState, augmentId: AugmentId): void {
+    player.augments.push(augmentId);
+    player.lastAugmentId = augmentId;
+    switch (augmentId) {
+      case 'mind-surge': {
+        player.damageMultiplier *= 1.2;
+        break;
+      }
+      case 'rapid-channel': {
+        player.cooldownMultiplier *= 0.8;
+        player.primaryCooldown = Math.min(player.primaryCooldown, PROJECTILE_COOLDOWN * player.cooldownMultiplier);
+        break;
+      }
+      case 'psy-shield': {
+        player.healthGrowthMultiplier += 0.25;
+        player.maxHealth = Math.round(player.maxHealth * 1.25);
+        player.health = player.maxHealth;
+        break;
+      }
+      case 'bolt-split': {
+        player.splitShots = Math.min(player.splitShots + 1, 2);
+        break;
+      }
+      default:
+        assertNever(augmentId as never);
+    }
+
+    this.events.push({
+      type: 'broadcast',
+      message: {
+        type: 'augment-applied',
+        playerId: player.id,
+        augmentId,
+        level: player.psychicLevel
+      }
+    });
   }
 }
 
@@ -535,6 +953,14 @@ httpServer.listen(PORT, () => {
 
 setInterval(() => {
   world.update();
+  const events = world.drainEvents();
+  for (const event of events) {
+    if (event.type === 'broadcast') {
+      broadcast(event.message);
+    } else {
+      sendToPlayerId(event.targetId, event.message);
+    }
+  }
   const snapshotMessage: ServerMessage = {
     type: 'snapshot',
     snapshot: world.snapshot()
@@ -596,6 +1022,14 @@ function handleClientMessage(context: ClientContext, raw: RawData): void {
       break;
     }
 
+    case 'choose-augment': {
+      if (!context.hasJoined) {
+        return;
+      }
+      world.chooseAugment(context.id, message.offerId, message.augmentId);
+      break;
+    }
+
     default: {
       assertNever(message);
     }
@@ -641,6 +1075,10 @@ function getEnemySpeed(kind: EnemyKind): number {
       return 130;
     case 'snake':
       return 55;
+    case 'raccoon':
+      return 70;
+    case 'coyote':
+      return 65;
     default:
       return 70;
   }
@@ -654,6 +1092,10 @@ function getEnemyMaxHealth(kind: EnemyKind): number {
       return 35;
     case 'snake':
       return 50;
+    case 'raccoon':
+      return 60;
+    case 'coyote':
+      return 420;
     default:
       return 30;
   }
@@ -699,17 +1141,6 @@ function isWithinLevel(position: Vector2D, level: LevelData): boolean {
   return position.x >= -halfWidth && position.x <= halfWidth && position.y >= -halfHeight && position.y <= halfHeight;
 }
 
-function grantExperience(player: PlayerSimState, amount: number): void {
-  player.experience += amount;
-  while (player.experience >= player.experienceToNext) {
-    player.experience -= player.experienceToNext;
-    player.psychicLevel += 1;
-    player.experienceToNext = Math.round(player.experienceToNext * 1.25 + 40);
-    player.maxHealth += 15;
-    player.health = Math.min(player.maxHealth, player.health + Math.round(player.maxHealth * 0.25));
-  }
-}
-
 function cleanDisplayName(raw: string): string {
   const trimmed = raw.trim().slice(0, 24);
   const sanitized = trimmed.replace(/[^A-Za-z0-9\s_-]/g, '');
@@ -745,6 +1176,16 @@ function broadcast(message: ServerMessage): void {
 function send(socket: WebSocket, message: ServerMessage): void {
   if (socket.readyState === WebSocket.OPEN) {
     socket.send(JSON.stringify(message));
+  }
+}
+
+function sendToPlayerId(playerId: string, message: ServerMessage): void {
+  const payload = JSON.stringify(message);
+  for (const context of clients.values()) {
+    if (context.id === playerId && context.socket.readyState === WebSocket.OPEN) {
+      context.socket.send(payload);
+      break;
+    }
   }
 }
 

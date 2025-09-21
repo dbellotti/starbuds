@@ -22,13 +22,22 @@ import {
   Vector3,
   WebGLRenderer
 } from 'three';
-import type { EnemyKind, EnemyState, LevelData, PlayerState, WorldSnapshot } from '@farsight/shared';
+import type {
+  EnemyKind,
+  EnemyState,
+  LevelData,
+  PlayerState,
+  ProjectileFaction,
+  WorldSnapshot,
+  LevelUpOfferMessage
+} from '@farsight/shared';
 import { PLAYER_HURT_FLASH_TIME, PROJECTILE_LIFETIME, TILE_SIZE, TICK_RATE } from '@farsight/shared';
 import { InputController } from './input';
 import { GameNetwork } from './network';
 import { createHud } from './hud';
 import { createDebugOverlay } from './debugOverlay';
 import { getServerUrl } from '../config';
+import { createAudioController } from './audio';
 
 const DESIGN_WORLD_UNITS = 480;
 const PLAYER_HEIGHT = 2;
@@ -37,12 +46,18 @@ const INPUT_RATE_MS = 50;
 const ENEMY_COLORS: Record<EnemyKind, number> = {
   fox: 0xf97316,
   hawk: 0x93c5fd,
-  snake: 0x4ade80
+  snake: 0x4ade80,
+  raccoon: 0xd1d5db,
+  coyote: 0xfbbf24
 };
 const PLAYER_TEXTURE = createChickenTexture();
 const ENEMY_TEXTURES = createEnemyTextures();
 const PROJECTILE_TRAIL_LENGTH = 12;
-const IMPACT_COLOR = 0x8ecaff;
+const PROJECTILE_STYLE: Record<ProjectileFaction, { body: number; trail: number; impact: number }> = {
+  player: { body: 0x38bdf8, trail: 0x60a5fa, impact: 0x8ecaff },
+  enemy: { body: 0xf87171, trail: 0xfca5a5, impact: 0xfca5a5 },
+  boss: { body: 0xc084fc, trail: 0xa855f7, impact: 0xe879f9 }
+};
 
 export async function bootstrapGame(): Promise<void> {
   const mountNode = ensureMountNode();
@@ -56,6 +71,16 @@ export async function bootstrapGame(): Promise<void> {
   const worldRenderer = new WorldRenderer(scene);
   const hud = createHud(mountNode);
   const debug = createDebugOverlay(mountNode);
+  const audio = createAudioController();
+  debug.updateCameraMode('Top');
+
+  const unlockAudio = () => {
+    audio.prime();
+    window.removeEventListener('pointerdown', unlockAudio);
+    window.removeEventListener('keydown', unlockAudio);
+  };
+  window.addEventListener('pointerdown', unlockAudio);
+  window.addEventListener('keydown', unlockAudio);
 
   handleResize(renderer, camera);
 
@@ -66,6 +91,13 @@ export async function bootstrapGame(): Promise<void> {
   let lastSnapshotTime = 0;
   let snapshotRateSmooth = TICK_RATE;
   let fpsSmooth = 60;
+  let cameraMode: 'top' | 'tilt' = 'top';
+  const levelUpQueue: LevelUpOfferMessage[] = [];
+  let activeLevelUp: LevelUpOfferMessage | null = null;
+  let awaitingAugment = false;
+  let detachLevelUp: (() => void) | null = null;
+  let detachAugment: (() => void) | null = null;
+  let detachBoss: (() => void) | null = null;
   const inputController = new InputController(() => {
     const local = worldRenderer.getLocalPlayerPosition();
     if (!local) {
@@ -78,8 +110,36 @@ export async function bootstrapGame(): Promise<void> {
     updatePointerWorld(event, renderer, camera, pointerWorld);
   });
   window.addEventListener('contextmenu', (event) => event.preventDefault());
+  window.addEventListener('keydown', (event) => {
+    if (event.code === 'KeyV' && !event.repeat) {
+      cameraMode = cameraMode === 'top' ? 'tilt' : 'top';
+      debug.updateCameraMode(cameraMode === 'top' ? 'Top' : 'Tilt');
+    }
+  });
 
   const network = new GameNetwork();
+  const presentNextOffer = (): boolean => {
+    if (awaitingAugment || activeLevelUp || levelUpQueue.length === 0) {
+      return false;
+    }
+    const offer = levelUpQueue.shift();
+    if (!offer) {
+      return false;
+    }
+    activeLevelUp = offer;
+    hud.presentLevelUp(
+      { offerId: offer.offerId, level: offer.level, options: offer.options },
+      (augmentId) => {
+        if (!activeLevelUp || awaitingAugment) {
+          return;
+        }
+        awaitingAugment = true;
+        hud.lockLevelUp();
+        network.chooseAugment(offer.offerId, augmentId);
+      }
+    );
+    return true;
+  };
   const detachPing = network.onPing((latency) => {
     debug.updateNetworkStats({ pingMs: latency });
   });
@@ -100,6 +160,30 @@ export async function bootstrapGame(): Promise<void> {
     worldRenderer.applySnapshot(snapshot);
     hud.update(snapshot, network.getPlayerId());
   });
+  detachLevelUp = network.onLevelUpOffer((offer) => {
+    if (offer.playerId !== network.getPlayerId()) {
+      return;
+    }
+    levelUpQueue.push(offer);
+    if (presentNextOffer()) {
+      audio.playLevelUp();
+    }
+  });
+  detachAugment = network.onAugmentApplied((message) => {
+    const isLocal = message.playerId === network.getPlayerId();
+    hud.showAugmentToast(message.augmentId, message.level, isLocal);
+    if (isLocal) {
+      awaitingAugment = false;
+      activeLevelUp = null;
+      hud.clearLevelUp();
+      presentNextOffer();
+      audio.playLevelUp();
+    }
+  });
+  detachBoss = network.onBossSpawn((message) => {
+    hud.showBossSpawn(message.kind);
+    audio.playBossSpawn();
+  });
   network.onDisconnect(() => {
     if (inputInterval !== null) {
       window.clearInterval(inputInterval);
@@ -108,6 +192,16 @@ export async function bootstrapGame(): Promise<void> {
     hud.update(emptySnapshot, null);
     debug.updateNetworkStats({ pingMs: Number.NaN, tickDriftMs: Number.NaN, snapshotsPerSecond: Number.NaN });
     console.warn('Disconnected from server');
+    levelUpQueue.length = 0;
+    activeLevelUp = null;
+    awaitingAugment = false;
+    hud.clearLevelUp();
+    detachLevelUp?.();
+    detachAugment?.();
+    detachBoss?.();
+    detachLevelUp = null;
+    detachAugment = null;
+    detachBoss = null;
   });
 
   const serverUrl = getServerUrl();
@@ -120,13 +214,20 @@ export async function bootstrapGame(): Promise<void> {
     serverTickRate = welcome.tickRate;
     snapshotRateSmooth = welcome.tickRate;
     console.info(`Connected to server as ${welcome.playerId}`);
+    console.info(`Level seed ${welcome.level.seed}`);
   } catch (error) {
     console.error('Failed to connect to game server', error);
     detachPing();
+    detachLevelUp?.();
+    detachAugment?.();
+    detachBoss?.();
     inputController.dispose();
     network.dispose();
     hud.dispose();
     debug.dispose();
+    window.removeEventListener('pointerdown', unlockAudio);
+    window.removeEventListener('keydown', unlockAudio);
+    audio.dispose();
     return;
   }
 
@@ -140,7 +241,7 @@ export async function bootstrapGame(): Promise<void> {
     lastTime = time;
 
     worldRenderer.update(deltaSeconds);
-    followCamera(camera, worldRenderer, deltaSeconds);
+    followCamera(camera, worldRenderer, deltaSeconds, cameraMode);
 
     if (deltaSeconds > 0) {
       const fpsInstant = 1 / deltaSeconds;
@@ -162,7 +263,13 @@ export async function bootstrapGame(): Promise<void> {
     network.dispose();
     hud.dispose();
     detachPing();
+    detachLevelUp?.();
+    detachAugment?.();
+    detachBoss?.();
     debug.dispose();
+    window.removeEventListener('pointerdown', unlockAudio);
+    window.removeEventListener('keydown', unlockAudio);
+    audio.dispose();
   });
 }
 
@@ -212,6 +319,10 @@ function handleResize(renderer: WebGLRenderer, camera: OrthographicCamera): void
   resize();
 }
 
+const pointerNear = new Vector3();
+const pointerFar = new Vector3();
+const pointerDir = new Vector3();
+
 function updatePointerWorld(
   event: PointerEvent,
   renderer: WebGLRenderer,
@@ -222,20 +333,40 @@ function updatePointerWorld(
   const ndcX = ((event.clientX - rect.left) / rect.width) * 2 - 1;
   const ndcY = -(((event.clientY - rect.top) / rect.height) * 2 - 1);
 
-  const ndc = new Vector3(ndcX, ndcY, 0);
-  ndc.unproject(camera);
-  out.set(ndc.x, ndc.z);
+  pointerNear.set(ndcX, ndcY, -1).unproject(camera);
+  pointerFar.set(ndcX, ndcY, 1).unproject(camera);
+  pointerDir.copy(pointerFar).sub(pointerNear);
+
+  const EPSILON = 1e-5;
+  if (Math.abs(pointerDir.y) < EPSILON) {
+    out.set(pointerNear.x, pointerNear.z);
+    return;
+  }
+
+  const t = (0 - pointerNear.y) / pointerDir.y;
+  const hitX = pointerNear.x + pointerDir.x * t;
+  const hitZ = pointerNear.z + pointerDir.z * t;
+  out.set(hitX, hitZ);
 }
 
-function followCamera(camera: OrthographicCamera, world: WorldRenderer, deltaSeconds: number): void {
+function followCamera(
+  camera: OrthographicCamera,
+  world: WorldRenderer,
+  deltaSeconds: number,
+  mode: 'top' | 'tilt'
+): void {
   const target = world.getLocalPlayerPosition();
   if (!target) {
     return;
   }
   const smooth = Math.min(1, deltaSeconds * 3);
-  camera.position.x = MathUtils.lerp(camera.position.x, target.x, smooth);
-  camera.position.z = MathUtils.lerp(camera.position.z, target.y, smooth);
-  camera.lookAt(camera.position.x, 0, camera.position.z);
+  const desiredY = mode === 'tilt' ? 360 : 520;
+  const desiredZ = mode === 'tilt' ? target.y + 220 : target.y + 280;
+  const desiredX = mode === 'tilt' ? target.x : target.x + 0;
+  camera.position.x = MathUtils.lerp(camera.position.x, desiredX, smooth);
+  camera.position.y = MathUtils.lerp(camera.position.y, desiredY, smooth);
+  camera.position.z = MathUtils.lerp(camera.position.z, desiredZ, smooth);
+  camera.lookAt(target.x, 0, target.y);
 }
 
 function createDisplayName(): string {
@@ -257,6 +388,8 @@ class WorldRenderer {
   private readonly xpGroup = new Group();
   private readonly impactSystem = new ImpactSystem();
   private readonly decor = new DecorRenderer();
+  private readonly enemyPool: EnemyAvatar[] = [];
+  private readonly projectilePool: ProjectileAvatar[] = [];
   private localPlayerId: string | null = null;
 
   constructor(scene: Scene) {
@@ -303,9 +436,11 @@ class WorldRenderer {
     for (const enemy of snapshot.enemies) {
       let avatar = this.enemies.get(enemy.id);
       if (!avatar) {
-        avatar = new EnemyAvatar(enemy.id, enemy.kind);
+        avatar = this.enemyPool.pop() ?? new EnemyAvatar(this.sceneGroup);
+        avatar.reset(enemy.id, enemy.kind);
         this.enemies.set(enemy.id, avatar);
-        this.sceneGroup.add(avatar.mesh);
+      } else if (avatar.getKind() !== enemy.kind) {
+        avatar.reset(enemy.id, enemy.kind);
       }
       avatar.setState(enemy);
       seenEnemies.add(enemy.id);
@@ -317,15 +452,19 @@ class WorldRenderer {
     for (const projectile of snapshot.projectiles) {
       let avatar = this.projectiles.get(projectile.id);
       if (!avatar) {
-        avatar = new ProjectileAvatar(projectile.id, this.projectileGroup);
+        avatar = this.projectilePool.pop() ?? new ProjectileAvatar(this.projectileGroup);
+        avatar.reset(projectile.id, projectile.faction);
         this.projectiles.set(projectile.id, avatar);
+      } else if (avatar.getFaction() !== projectile.faction) {
+        avatar.reset(projectile.id, projectile.faction);
       }
       avatar.setState(
         projectile.position.x,
         projectile.position.y,
         projectile.velocity.x,
         projectile.velocity.y,
-        projectile.ttl
+        projectile.ttl,
+        projectile.power
       );
       seenProjectiles.add(projectile.id);
     }
@@ -353,7 +492,8 @@ class WorldRenderer {
 
     for (const [id, avatar] of this.enemies.entries()) {
       if (!seenEnemies.has(id)) {
-        this.sceneGroup.remove(avatar.mesh);
+        avatar.release();
+        this.enemyPool.push(avatar);
         this.enemies.delete(id);
       }
     }
@@ -362,9 +502,10 @@ class WorldRenderer {
       if (!seenProjectiles.has(id)) {
         if (avatar.shouldSpawnImpact()) {
           const impactPosition = avatar.getPosition();
-          this.impactSystem.spawn(impactPosition.x, impactPosition.y, IMPACT_COLOR);
+          this.impactSystem.spawn(impactPosition.x, impactPosition.y, avatar.getImpactColor());
         }
-        avatar.dispose();
+        avatar.release();
+        this.projectilePool.push(avatar);
         this.projectiles.delete(id);
       }
     }
@@ -408,9 +549,16 @@ class WorldRenderer {
 
   private clearTransients(): void {
     for (const avatar of this.projectiles.values()) {
-      avatar.dispose();
+      avatar.release();
+      this.projectilePool.push(avatar);
     }
     this.projectiles.clear();
+
+    for (const avatar of this.enemies.values()) {
+      avatar.release();
+      this.enemyPool.push(avatar);
+    }
+    this.enemies.clear();
 
     for (const orb of this.xpDrops.values()) {
       this.xpGroup.remove(orb.mesh);
@@ -761,7 +909,7 @@ class PlayerAvatar {
 
 class EnemyAvatar {
   readonly mesh: Group;
-  readonly id: string;
+  private readonly parent: Group;
   private readonly body: Mesh;
   private readonly material: MeshBasicMaterial;
   private readonly telegraph: Mesh;
@@ -776,17 +924,17 @@ class EnemyAvatar {
   private attackRange = TILE_SIZE;
   private time = 0;
   private initialized = false;
+  private id = '';
+  private kind: EnemyKind = 'fox';
 
-  constructor(id: string, kind: EnemyKind) {
-    this.id = id;
+  constructor(parent: Group) {
+    this.parent = parent;
     this.mesh = new Group();
     this.mesh.renderOrder = 2;
 
     const bodyGeometry = new PlaneGeometry(20, 20);
     bodyGeometry.rotateX(-Math.PI / 2);
     this.material = new MeshBasicMaterial({
-      color: ENEMY_COLORS[kind],
-      map: ENEMY_TEXTURES[kind],
       transparent: true,
       opacity: 0.95,
       toneMapped: false
@@ -811,6 +959,42 @@ class EnemyAvatar {
     this.telegraph.position.y = 0.15;
     this.telegraph.visible = false;
     this.mesh.add(this.telegraph);
+  }
+
+  reset(id: string, kind: EnemyKind): void {
+    this.id = id;
+    this.kind = kind;
+    this.time = 0;
+    this.initialized = false;
+    this.intent = 'idle';
+    this.displayIntentTimer = 0;
+    this.displayIntentDuration = 0;
+    if (this.mesh.parent !== this.parent) {
+      this.parent.add(this.mesh);
+    }
+    this.mesh.visible = true;
+    this.material.map = ENEMY_TEXTURES[kind];
+    this.material.needsUpdate = true;
+    this.material.color.setHex(ENEMY_COLORS[kind]);
+    this.material.opacity = kind === 'coyote' ? 1 : 0.95;
+    const scale = kind === 'coyote' ? 1.35 : 1;
+    this.body.scale.setScalar(scale);
+    this.telegraphMaterial.opacity = 0;
+    this.telegraphMaterial.color.setHex(kind === 'coyote' ? 0xf59e0b : 0xffffff);
+  }
+
+  getKind(): EnemyKind {
+    return this.kind;
+  }
+
+  release(): void {
+    if (this.mesh.parent) {
+      this.mesh.parent.remove(this.mesh);
+    }
+    this.mesh.visible = false;
+    this.telegraph.visible = false;
+    this.initialized = false;
+    this.intent = 'idle';
   }
 
   setState(state: EnemyState): void {
@@ -871,28 +1055,29 @@ class EnemyAvatar {
 
 class ProjectileAvatar {
   readonly mesh: Mesh;
-  readonly id: string;
-  private readonly currentPosition = new Vector2();
-  private readonly targetPosition = new Vector2();
-  private currentFacing = 0;
-  private targetFacing = 0;
-  private readonly material: MeshBasicMaterial;
-  private displayTtl = PROJECTILE_LIFETIME;
-  private initialized = false;
   private readonly parent: Group;
+  private readonly trail: Line;
   private readonly trailGeometry: BufferGeometry;
   private readonly trailMaterial: LineBasicMaterial;
-  private readonly trail: Line;
+  private readonly material: MeshBasicMaterial;
+  private readonly currentPosition = new Vector2();
+  private readonly targetPosition = new Vector2();
   private readonly history: Vector2[] = [];
+  private currentFacing = 0;
+  private targetFacing = 0;
+  private displayTtl = PROJECTILE_LIFETIME;
   private serverTtl = PROJECTILE_LIFETIME;
+  private initialized = false;
+  private id = '';
+  private faction: ProjectileFaction = 'player';
+  private impactColor = PROJECTILE_STYLE.player.impact;
+  private power = 0;
 
-  constructor(id: string, parent: Group) {
-    this.id = id;
+  constructor(parent: Group) {
     this.parent = parent;
     const geometry = new PlaneGeometry(12, 12);
     geometry.rotateX(-Math.PI / 2);
     this.material = new MeshBasicMaterial({
-      color: 0x38bdf8,
       transparent: true,
       opacity: 0.75,
       blending: AdditiveBlending,
@@ -901,24 +1086,49 @@ class ProjectileAvatar {
     this.mesh = new Mesh(geometry, this.material);
     this.mesh.position.y = PLAYER_HEIGHT * 0.9;
     this.mesh.renderOrder = 3;
-    parent.add(this.mesh);
 
     this.trailGeometry = new BufferGeometry();
     const positions = new Float32Array(PROJECTILE_TRAIL_LENGTH * 3);
     this.trailGeometry.setAttribute('position', new Float32BufferAttribute(positions, 3));
     this.trailGeometry.setDrawRange(0, 0);
     this.trailMaterial = new LineBasicMaterial({
-      color: 0x60a5fa,
       transparent: true,
       opacity: 0.55,
       depthWrite: false
     });
     this.trail = new Line(this.trailGeometry, this.trailMaterial);
     this.trail.renderOrder = 2;
-    parent.add(this.trail);
   }
 
-  setState(x: number, y: number, vx: number, vy: number, ttl: number): void {
+  reset(id: string, faction: ProjectileFaction): void {
+    this.id = id;
+    this.faction = faction;
+    this.impactColor = PROJECTILE_STYLE[faction].impact;
+    this.material.color.setHex(PROJECTILE_STYLE[faction].body);
+    this.trailMaterial.color.setHex(PROJECTILE_STYLE[faction].trail);
+    this.initialized = false;
+    this.displayTtl = PROJECTILE_LIFETIME;
+    this.serverTtl = PROJECTILE_LIFETIME;
+    this.history.length = 0;
+    if (this.mesh.parent !== this.parent) {
+      this.parent.add(this.mesh);
+    }
+    if (this.trail.parent !== this.parent) {
+      this.parent.add(this.trail);
+    }
+    this.mesh.visible = true;
+    this.trail.visible = true;
+  }
+
+  getFaction(): ProjectileFaction {
+    return this.faction;
+  }
+
+  getImpactColor(): number {
+    return this.impactColor;
+  }
+
+  setState(x: number, y: number, vx: number, vy: number, ttl: number, power: number): void {
     this.targetPosition.set(x, y);
     if (!this.initialized) {
       this.currentPosition.set(x, y);
@@ -929,6 +1139,7 @@ class ProjectileAvatar {
     }
     this.displayTtl = ttl;
     this.serverTtl = ttl;
+    this.power = power;
   }
 
   update(deltaSeconds: number): void {
@@ -938,14 +1149,14 @@ class ProjectileAvatar {
     this.displayTtl = Math.max(0, this.displayTtl - deltaSeconds);
 
     const lifeRatio = Math.max(0, Math.min(1, this.displayTtl / PROJECTILE_LIFETIME));
-    this.material.opacity = 0.35 + (1 - lifeRatio) * 0.6;
-    const scale = 0.85 + (1 - lifeRatio) * 0.3;
+    const powerScale = Math.min(1, this.power / 50);
+    this.material.opacity = 0.35 + (1 - lifeRatio) * 0.6 + powerScale * 0.1;
+    const scale = 0.85 + (1 - lifeRatio) * 0.3 + powerScale * 0.2;
     this.mesh.scale.set(scale, scale, scale);
 
     this.mesh.position.set(this.currentPosition.x, PLAYER_HEIGHT * 0.9, this.currentPosition.y);
     this.mesh.rotation.y = -this.currentFacing + Math.PI / 2;
 
-    // Trail history (store most recent positions)
     const latest = this.history[this.history.length - 1];
     if (!latest || latest.distanceToSquared(this.currentPosition) > 4) {
       this.history.push(this.currentPosition.clone());
@@ -975,17 +1186,21 @@ class ProjectileAvatar {
     positions.needsUpdate = true;
     this.trailGeometry.setDrawRange(0, Math.max(2, drawCount));
     this.trail.visible = drawCount > 1;
-    this.trailMaterial.opacity = 0.2 + Math.min(0.5, drawCount / PROJECTILE_TRAIL_LENGTH);
+    this.trailMaterial.opacity = 0.2 + Math.min(0.5, drawCount / PROJECTILE_TRAIL_LENGTH) + powerScale * 0.15;
   }
 
-  dispose(): void {
-    this.parent.remove(this.mesh);
-    this.parent.remove(this.trail);
-    this.mesh.geometry.dispose();
-    this.material.dispose();
-    this.trailGeometry.dispose();
-    this.trailMaterial.dispose();
+  release(): void {
+    if (this.mesh.parent) {
+      this.mesh.parent.remove(this.mesh);
+    }
+    if (this.trail.parent) {
+      this.trail.parent.remove(this.trail);
+    }
     this.history.length = 0;
+    this.initialized = false;
+    this.mesh.visible = false;
+    this.trail.visible = false;
+    this.trailGeometry.setDrawRange(0, 0);
   }
 
   getPosition(): Vector2 {
@@ -1182,7 +1397,9 @@ function createEnemyTextures(): Record<EnemyKind, CanvasTexture> {
   return {
     fox: createEnemyTexture('#fb923c', '#fde68a'),
     hawk: createEnemyTexture('#bfdbfe', '#f8fafc'),
-    snake: createEnemyTexture('#4ade80', '#bbf7d0')
+    snake: createEnemyTexture('#4ade80', '#bbf7d0'),
+    raccoon: createEnemyTexture('#9ca3af', '#f3f4f6'),
+    coyote: createEnemyTexture('#fbbf24', '#fef3c7')
   };
 }
 
