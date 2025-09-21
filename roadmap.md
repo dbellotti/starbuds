@@ -21,6 +21,7 @@ This plan keeps the game fun at every stage while steering toward a rich, perfor
 - **3D Transition Prep**: Build modest low-poly chicken/enemy meshes (300–600 tris) and hook into billboard slots for testing; author texture guidelines in `docs/art-style.md`. ✅
 - **Performance**: Introduce GPU instancing for tiles/props and move XP orb animations to shader uniforms. Add regression check using headless puppeteer script capturing FPS metrics. ✅ (`npm run perf:fps`)
 - **Tooling**: Create automated smoke test that spins server/client, connects bot user, and validates basic snapshot loop. Integrate eslint/prettier with TypeScript config. ✅ (`npm run smoke`, root lint setup)
+- **Networking DX**: Web client now auto-targets the hosting machine for websockets (configurable with `VITE_SERVER_PORT`/`VITE_SERVER_ORIGIN`) so Tailscale guests join without custom builds. ✅
 
 ## Milestone 3 – Content Expansion & 3D Adoption (Week 8–11)
 - **Gameplay & Balance**: Enrich enemy roster (diving hawk, burrowing weasel, support owl) and boss loot bursts with psychic artifacts influencing builds. Tune XP/health curves with telemetry from playtests.

@@ -35,7 +35,7 @@
 - Analysis: `npm run replay:snapshots -- logs/snapshots.json`
 - Smoke: `npm run smoke` spins up the server and verifies a headless bot handshake.
 - Perf: `npm run perf:fps` builds the client, runs `vite preview`, and records short FPS samples with Puppeteer.
-- Copy `.env.example` → `.env` to override ports or server origin locally.
+- Copy `.env.example` → `.env` to override ports or server origin locally. By default the client targets `ws(s)://<current host>:7777`; change `VITE_SERVER_PORT` or `VITE_SERVER_ORIGIN` when routing through other proxies.
 
 **Open Threads / Next Steps**
 1. Milestone 2 party play: roster/ready panels, lightweight ping wheel, shared objective tracker UI.

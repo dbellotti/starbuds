@@ -21,7 +21,7 @@
 - `npm run perf:fps`: builds the client, runs `vite preview`, and captures a short FPS sample via Puppeteer (Chrome headless).
 - `npm run lint` / `npm run lint:fix`: ESLint + Prettier across all workspaces.
 - Prefer `rg` for repo searches (`rg "EnemyAvatar" packages`).
-- Copy `.env.example` to `.env` when you need to override local ports or client server origin (`VITE_SERVER_ORIGIN`).
+- Copy `.env.example` to `.env` when you need to override local ports or client server origin. `VITE_SERVER_ORIGIN` wins, otherwise the client targets the current hostname with `VITE_SERVER_PORT` (default `7777`).
 
 ## Coding Style & Naming Conventions
 - TypeScript everywhere; keep `strict` semantics. Modules use ES syntax with named exports where feasible.
@@ -46,5 +46,6 @@
 - Link Tailscale or deployment notes if networking adjustments are involved.
 
 ## Security & Configuration Tips
-- Treat server port (default `7777`) as configurable via `.env` or process vars; never hard-code secrets.
+- Treat server port (default `7777`) as configurable via `.env` (`VITE_SERVER_PORT`) or process vars; never hard-code secrets.
+- The client auto-derives the websocket host from the current page. Override `VITE_SERVER_ORIGIN` only when tunnelling through a proxy domain.
 - Test remote clients through Tailscale tunnels before claiming multiplayer readiness.
