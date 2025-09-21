@@ -27,7 +27,7 @@ import { GameNetwork } from './network';
 import { createHud } from './hud';
 import { getServerUrl } from '../config';
 
-const DESIGN_WORLD_UNITS = 320;
+const DESIGN_WORLD_UNITS = 480;
 const PLAYER_HEIGHT = 2;
 const PLAYER_COLORS = [0xfef08a, 0x38bdf8, 0xf97316, 0xf9a8d4];
 const INPUT_RATE_MS = 50;
@@ -142,7 +142,7 @@ function createCamera(viewport: Vector2): OrthographicCamera {
   const halfHeight = DESIGN_WORLD_UNITS / 2;
   const halfWidth = halfHeight * aspect;
   const camera = new OrthographicCamera(-halfWidth, halfWidth, halfHeight, -halfHeight, 0.1, 2000);
-  camera.position.set(0, 360, 0);
+  camera.position.set(0, 520, 0);
   camera.lookAt(0, 0, 0);
   return camera;
 }
