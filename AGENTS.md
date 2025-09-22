@@ -9,7 +9,7 @@
 - `packages/**/src/` hosts source; keep new assets adjacent to their consumers. Stash design docs or one-off tools under `docs/` or `tools/` if created.
 - `docs/art-style.md` collects texture + low-poly direction; skim before shipping new biome work.
 - Client camera/debug hotkeys live in `packages/client/src/game/bootstrap.ts`; remember Key `V` toggles view and the HUD tip mirrors expectations.
-- Level-up UI and toast feedback are owned by `packages/client/src/game/hud.ts`; prefer calling its helpers (`presentLevelUp`, `showAugmentToast`) instead of manipulating DOM directly.
+- Level-up UI and toast feedback are owned by `packages/client/src/game/hud.ts`; prefer calling its helpers (`presentLevelUp`, `showAugmentToast`, `showBossSpawn`) instead of manipulating DOM directly. Build and artifact indicators also live here—update the HUD helpers when adding new VFX/UI signals.
 
 ## Build, Test, and Development Commands
 - `npm run dev --workspace=@farsight/server`: starts the tick loop and websocket server (respects `LEVEL_SEED`).
@@ -17,6 +17,7 @@
 - `npm run dev:all`: spawns both client and server watchers (uses `scripts/dev-all.js`). Ctrl+C stops both processes.
 - `npm run typecheck --workspaces`: runs TypeScript in no-emit mode across all packages; use before commits.
 - `npm run replay:snapshots -- <file.json>`: summarises recorded `WorldSnapshot` logs to inspect tick cadence, counts, and boss waves.
+- `npm run telemetry:summary -- <logfile>`: parses server `[telemetry]` console output into aggregate damage/xp/augment/artifact totals for quick balance reads.
 - `npm run smoke`: spins up the authoritative server and verifies a headless websocket client can join + receive snapshots.
 - `npm run perf:fps`: builds the client, runs `vite preview`, and captures a short FPS sample via Puppeteer (Chrome headless).
 - `npm run lint` / `npm run lint:fix`: ESLint + Prettier across all workspaces.
@@ -28,7 +29,7 @@
 - Indent with two spaces, terminate statements, and stay ASCII unless assets demand otherwise.
 - Name files and symbols descriptively: `camelCase` for functions/vars, `PascalCase` for types/classes, `kebab-case` for files.
 - Three.js materials and simulation constants live in `shared`; avoid duplicating magic numbers on client/server.
-- Procedural textures are authored in code; cache reusable `CanvasTexture` instances rather than re-creating per frame.
+- Procedural textures are authored in code; cache reusable `CanvasTexture` instances rather than re-creating per frame. Biome tiles pack into a runtime atlas via `createBiomeMaterials`; reuse the helper when adding new atlas tiles.
 - Audio must be gated behind a user gesture (see `createAudioController`) to satisfy browser autoplay policies.
 - ESLint (`.eslintrc.cjs`) + Prettier (`.prettierrc.json`) guard formatting. Run `npm run lint:fix` before long diff reviews.
 

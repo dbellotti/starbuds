@@ -13,13 +13,12 @@
 - Dynamic HUD frameworks: roster/ready panel, objective tracker, ping wheel, and augment toasts all driven from shared snapshot data.
 
 **Recent Feature Pass (committed)**
-- Gameplay: Added `raccoon` ranged enemy and `coyote` miniboss with explosive shockwave telegraphs plus generous XP drops.
-- Progression: Level-up augment picker with four augments, server-side stat modifiers, and HUD overlay for option selection + last augment summary.
-- Feedback: New audio controller (lo-fi background loop, level-up & boss SFX), Key `V` camera tilt toggle mirrored in debug overlay and HUD tip.
-- Rendering: Projectile/enemy avatar pooling with faction-tinted VFX, per-faction impact colors, and boss-scaled textures.
-- Tooling: `npm run replay:snapshots` for offline snapshot analysis, level seed logging on server boot, HUD toasts for augment/boss events.
-- Co-op quality of life: ready-check button syncs to server, teammate augment choices surface in roster, ping wheel (`Key Q`) echoes to the world and HUD, and objective tracker exposes wave progress, boss countdown, and extraction state.
-- Visual foundations: biome-driven tile atlases, directional+ambient lighting, screen shake on player damage, shader-driven XP orbs, instanced biome props, and first-pass low-poly chicken/enemy meshes.
+- Gameplay: Hawk dive, burrowing weasel, and support owl enemies landed; bosses now burst psychic artifacts that grant permanent stat boosts. Foraging Aura augments expand a stackable loot magnet and the server logs damage/xp/augment/artifact telemetry for tuning.
+- Progression: Level-up picker supports stackable augments with HUD build summaries surfacing augments, artifacts, and magnet radius per player.
+- Feedback: Audio controller still drives loops/SFX; psychic pulses, artifact toasts, and boss banners reinforce major events. Aim-heading is decoupled from movement to keep projectiles aligned with the reticle.
+- Rendering: Player/enemy meshes animate via lightweight rigs, parallax skyboxes and biome props (windmill, grass sway) dress the arena, and disk-based psychic VFX punctuate artifact pickups.
+- Tooling: `npm run telemetry:summary` digests the server’s `[telemetry]` log output; runtime texture atlases cut draw calls; particles frustum-cull to relieve overdraw.
+- Co-op quality of life: Ready check, roster augment surfacing, ping wheel, and objective tracker remain core; HUD now indicates active builds and artifact gains.
 
 **Baseline Polish (completed)**
 - Visual: Procedural chicken/enemy textures, additive projectile trails, pooled impact bursts, and harm flicker tuning.
@@ -38,11 +37,11 @@
 - Copy `.env.example` → `.env` to override ports or server origin locally. By default the client targets `ws(s)://<current host>:7777`; change `VITE_SERVER_PORT` or `VITE_SERVER_ORIGIN` when routing through other proxies.
 
 **Open Threads / Next Steps**
-1. Milestone 2 party play: roster/ready panels, lightweight ping wheel, shared objective tracker UI.
-2. Visual foundations: biome tile variants, dynamic lighting pass, art style guide for low-poly creatures.
-3. Co-op UX: in-game chat/pings and surfacing augment choices to teammates.
-4. Performance: GPU instancing for props, smoke-test automation, snapshot compression exploration.
-5. Networking/QA: reconnect path, snapshot replay tooling integration into CI, expand test matrix across hardware/browser combos.
+1. HUD sandbox + spawn gizmo: storybook-style UI route and in-editor placement tooling remain to be scheduled.
+2. Telemetry dashboards: stream aggregated outputs into Grafana/observable for playtest nights once `telemetry:summary` is battle-tested.
+3. Performance: establish `perf:fps` baselines on Chrome (M1 Air + mid-tier Windows) and explore snapshot compression.
+4. Networking/QA: reconnect path, snapshot replay integration into CI, broaden hardware/browser coverage.
+5. Meta planning: prepare Milestone 4 art/tooling specs (armory hub, mutators, bundle budgets).
 
 **Key Files (post-commit)**
 - Shared schema: `packages/shared/src/index.ts`

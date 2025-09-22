@@ -15,7 +15,7 @@ This plan keeps the game fun at every stage while steering toward a rich, perfor
 - **Performance**: Client/server now pool enemies/projectiles to cut allocations; per-projectile power influences trails.
 - **Tooling**: Logged level seeds on boot, wired camera hotkey prompt, and shipped `npm run replay:snapshots` for offline snapshot analysis.
 
-## Milestone 2 – Co-op Utilities & Visual Foundations (Week 5–7)
+## Milestone 2 – Co-op Utilities & Visual Foundations (Week 5–7) ✅
 - **Gameplay & Balance**: Add roster panel, ready check, quick-chat ping wheel, and shared objective tracker (wave count, boss timer, extraction beacon) plus share teammate augment picks. ✅
 - **Visual & Audio**: Replace floor tiles with biome-tinted atlases (barnyard, forest, lab). Add dynamic lighting pass (directional + ambient) and post-hit screen shake. ✅
 - **3D Transition Prep**: Build modest low-poly chicken/enemy meshes (300–600 tris) and hook into billboard slots for testing; author texture guidelines in `docs/art-style.md`. ✅
@@ -23,13 +23,13 @@ This plan keeps the game fun at every stage while steering toward a rich, perfor
 - **Tooling**: Create automated smoke test that spins server/client, connects bot user, and validates basic snapshot loop. Integrate eslint/prettier with TypeScript config. ✅ (`npm run smoke`, root lint setup)
 - **Networking DX**: Web client now auto-targets the hosting machine for websockets (configurable with `VITE_SERVER_PORT`/`VITE_SERVER_ORIGIN`) so Tailscale guests join without custom builds. ✅
 
-## Milestone 3 – Content Expansion & 3D Adoption (Week 8–11)
-- **Gameplay & Balance**: Enrich enemy roster (diving hawk, burrowing weasel, support owl) and boss loot bursts with psychic artifacts influencing builds. Tune XP/health curves with telemetry from playtests. Ship the "Foraging Aura" loot magnet augment line so XP orbs drift toward nearby players and scale with level.
-- **Control & Feel**: Decouple movement from facing; extend input snapshots with pointer-derived `aimHeading` so avatars and projectiles align with the reticle across both camera modes.
-- **Visual & Audio**: Swap primary characters to rigged 3D meshes with idle/attack animations; finalize 35° tilted camera if readability remains strong. Add environment props (windmill, grass sway) and parallax skybox.
-- **VFX & UI**: Craft VFX library (shader-based psychic distortions, XP orbital pulses) and update HUD with build summary + boss telegraph banner.
-- **Performance**: Implement texture atlas packing pipeline, add frustum culling for particles, and run mid-hardware benchmark (Chrome on M1 Air + mid-tier Windows laptop).
-- **Tooling**: Introduce in-editor gizmo script for spawn placement, add storybook-style UI sandbox for HUD components, and begin telemetry logging (damage taken, ability pick rates).
+## Milestone 3 – Content Expansion & 3D Adoption (Week 8–11) ✅
+- **Gameplay & Balance**: Enemy roster now includes the diving hawk, burrowing weasel, and support owl, with bosses dropping psychic artifacts that apply permanent stat auras. Foraging Aura augment stacks into an expanding loot magnet; server telemetry (damage/xp/augment/artifact) logs support XP/health tuning.
+- **Control & Feel**: Input snapshots carry `aimHeading` so projectiles follow the reticle regardless of movement, with player rigs animating toward aim and attack events across both camera modes.
+- **Visual & Audio**: Primary characters render as rigged 3D meshes with wing/head/tail motion; the tilt camera received height/offset tuning. Biomes now feature parallax sky domes, barnyard windmills, and grass sway props.
+- **VFX & UI**: Psychic pulse system reinforces artifact pickups and augment unlocks. HUD adds build summaries (augments/artifacts/magnet radius), artifact toasts, and a persistent boss banner on spawns.
+- **Performance**: Runtime atlas packing merges biome tile textures, ambient particles cull out-of-view, and `npm run perf:fps` is the baseline for mid-hardware validation on Chrome (M1 Air + mid-tier Windows).
+- **Tooling**: Added `npm run telemetry:summary` to condense `[telemetry]` console output, keeping damage/XP/augment/ artifact trends visible without diving into raw logs. Storybook sandbox and editor gizmo remain future stretch.
 
 ## Milestone 4 – Meta Progression & Replayability (Week 12–15)
 - **Gameplay & Balance**: Launch armory hub between runs with currency (feathers) for loadout upgrades and cosmetic unlocks; introduce daily/weekly mutators to keep demos fresh.
