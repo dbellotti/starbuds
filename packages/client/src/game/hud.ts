@@ -1,11 +1,17 @@
 import type {
+  ActiveMutators,
+  ArmoryItem,
+  ArmoryState,
   ArtifactKind,
   AugmentId,
   AugmentOption,
   EnemyKind,
+  GamePhase,
   QuickPingBroadcastMessage,
   QuickPingKind,
-  WorldSnapshot
+  ReadyContext,
+  WorldSnapshot,
+  PlayerArmoryState
 } from '@farsight/shared';
 import {
   ARTIFACT_DEFINITIONS,
@@ -24,6 +30,7 @@ interface LevelUpUiOffer {
 
 export interface Hud {
   update(snapshot: WorldSnapshot, playerId: string | null): void;
+  updateArmory(state: ArmoryState, playerId: string | null): void;
   presentLevelUp(offer: LevelUpUiOffer, onSelect: (augmentId: AugmentId) => void): void;
   lockLevelUp(): void;
   clearLevelUp(): void;
@@ -38,7 +45,10 @@ export interface Hud {
 }
 
 export interface HudOptions {
-  onReadyChange?: (ready: boolean) => void;
+  onReadyChange?: (ready: boolean, context: ReadyContext) => void;
+  onArmoryPurchase?: (itemId: string) => void;
+  onArmoryEquip?: (itemId: string, slot?: ArmoryItem['slot']) => void;
+  onLaunchRun?: () => void;
 }
 
 export function createHud(parent: HTMLElement, options: HudOptions = {}): Hud {
@@ -169,6 +179,58 @@ export function createHud(parent: HTMLElement, options: HudOptions = {}): Hud {
   pingWheel.className = 'hud-ping-wheel';
   root.appendChild(pingWheel);
 
+  const mutatorPanel = document.createElement('div');
+  mutatorPanel.className = 'hud-mutators';
+  objectivesPanel.appendChild(mutatorPanel);
+  const dailyMutatorLabel = document.createElement('div');
+  dailyMutatorLabel.className = 'hud-mutator hud-mutator-daily';
+  mutatorPanel.appendChild(dailyMutatorLabel);
+  const weeklyMutatorLabel = document.createElement('div');
+  weeklyMutatorLabel.className = 'hud-mutator hud-mutator-weekly';
+  mutatorPanel.appendChild(weeklyMutatorLabel);
+
+  const armoryPanel = document.createElement('div');
+  armoryPanel.className = 'hud-armory';
+  root.appendChild(armoryPanel);
+  const armoryHeader = document.createElement('div');
+  armoryHeader.className = 'hud-armory-header';
+  armoryHeader.textContent = 'Armory Hub';
+  armoryPanel.appendChild(armoryHeader);
+  const armoryCurrency = document.createElement('div');
+  armoryCurrency.className = 'hud-armory-currency';
+  armoryPanel.appendChild(armoryCurrency);
+  const armoryReadyList = document.createElement('ul');
+  armoryReadyList.className = 'hud-armory-roster';
+  armoryPanel.appendChild(armoryReadyList);
+  const armorySections = document.createElement('div');
+  armorySections.className = 'hud-armory-sections';
+  armoryPanel.appendChild(armorySections);
+  const upgradesSection = document.createElement('div');
+  upgradesSection.className = 'hud-armory-section hud-armory-upgrades';
+  upgradesSection.innerHTML = '<h3>Upgrades</h3>';
+  armorySections.appendChild(upgradesSection);
+  const upgradesList = document.createElement('div');
+  upgradesList.className = 'hud-armory-list';
+  upgradesSection.appendChild(upgradesList);
+  const cosmeticsSection = document.createElement('div');
+  cosmeticsSection.className = 'hud-armory-section hud-armory-cosmetics';
+  cosmeticsSection.innerHTML = '<h3>Cosmetics</h3>';
+  armorySections.appendChild(cosmeticsSection);
+  const cosmeticsList = document.createElement('div');
+  cosmeticsList.className = 'hud-armory-list';
+  cosmeticsSection.appendChild(cosmeticsList);
+  const launchButton = document.createElement('button');
+  launchButton.type = 'button';
+  launchButton.className = 'hud-armory-launch';
+  launchButton.textContent = 'Launch Sortie';
+  armoryPanel.appendChild(launchButton);
+  launchButton.addEventListener('click', () => {
+    if (launchButton.disabled) {
+      return;
+    }
+    options.onLaunchRun?.();
+  });
+
   const PING_DESCRIPTORS: Array<{ kind: QuickPingKind; label: string; hint: string }> = [
     { kind: 'assist', label: 'Assist', hint: '↑' },
     { kind: 'objective', label: 'Objective', hint: '→' },
@@ -206,7 +268,11 @@ export function createHud(parent: HTMLElement, options: HudOptions = {}): Hud {
   let offerHandler: ((augmentId: AugmentId) => void) | null = null;
   let offerLocked = false;
   let toastTimer: number | null = null;
-  let readyState = false;
+  let extractionReady = false;
+  let armoryReady = false;
+  let currentPhase: GamePhase = 'combat';
+  let currentArmory: ArmoryState | null = null;
+  let localArmory: PlayerArmoryState | null = null;
   let pingActive = false;
   let pingSelection: QuickPingKind | null = null;
   const rosterDom = new Map<string, RosterRow>();
@@ -232,22 +298,44 @@ export function createHud(parent: HTMLElement, options: HudOptions = {}): Hud {
     }, 3800);
   };
 
-  const applyReadyState = () => {
-    readyButton.classList.toggle('is-ready', readyState);
-    readyButton.textContent = readyState ? 'Ready' : 'Ready Up';
-    readyButton.setAttribute('aria-pressed', readyState ? 'true' : 'false');
+  const updateReadyButton = () => {
+    const context = currentPhase === 'armory' ? 'armory' : 'extraction';
+    readyButton.dataset.context = context;
+    const isSummary = currentPhase === 'summary';
+    const pressed = context === 'armory' ? armoryReady : extractionReady;
+    const label = isSummary
+      ? 'Summary'
+      : context === 'armory'
+        ? pressed
+          ? 'Ready for Drop'
+          : 'Prep Loadout'
+        : pressed
+          ? 'Ready'
+          : 'Ready Up';
+    const disabled = isSummary || !options.onReadyChange;
+    readyButton.disabled = disabled;
+    readyButton.classList.toggle('is-ready', pressed && !disabled);
+    readyButton.textContent = label;
+    readyButton.setAttribute('aria-pressed', pressed && !disabled ? 'true' : 'false');
   };
 
   const handleReadyClick = () => {
     if (readyButton.disabled) {
       return;
     }
-    readyState = !readyState;
-    applyReadyState();
-    options.onReadyChange?.(readyState);
+    const context = (readyButton.dataset.context as ReadyContext) ?? 'extraction';
+    if (context === 'armory') {
+      armoryReady = !armoryReady;
+      options.onReadyChange?.(armoryReady, 'armory');
+    } else {
+      extractionReady = !extractionReady;
+      options.onReadyChange?.(extractionReady, 'extraction');
+    }
+    updateReadyButton();
   };
 
   readyButton.addEventListener('click', handleReadyClick);
+  updateReadyButton();
 
   function tallyList<T extends string>(values: T[]): Map<T, number> {
     const counts = new Map<T, number>();
@@ -297,6 +385,187 @@ export function createHud(parent: HTMLElement, options: HudOptions = {}): Hud {
     return `Loot Magnet: Lv ${level} (${calculateMagnetRadius(level)}u)`;
   }
 
+  function renderMutators(mutators: ActiveMutators): void {
+    if (!mutators) {
+      dailyMutatorLabel.textContent = 'Daily Mutator: —';
+      weeklyMutatorLabel.textContent = 'Weekly Mutator: —';
+      return;
+    }
+    dailyMutatorLabel.textContent = `Daily: ${mutators.daily.name} — ${mutators.daily.impactSummary}`;
+    weeklyMutatorLabel.textContent = `Weekly: ${mutators.weekly.name} — ${mutators.weekly.impactSummary}`;
+  }
+
+  function renderArmoryRoster(players: PlayerArmoryState[], localId: string | null): void {
+    armoryReadyList.replaceChildren(
+      ...players.map((player) => {
+        const li = document.createElement('li');
+        li.className = 'hud-armory-player';
+        if (player.ready) {
+          li.classList.add('is-ready');
+        }
+        if (player.playerId === localId) {
+          li.classList.add('is-local');
+        }
+        li.innerHTML = `
+          <span class="hud-armory-player-name">${player.displayName}</span>
+          <span class="hud-armory-player-status">${player.ready ? 'Ready' : 'Planning'}</span>`;
+        return li;
+      })
+    );
+  }
+
+  function renderArmoryItems(
+    container: HTMLElement,
+    items: ArmoryItem[],
+    local: PlayerArmoryState | null
+  ): void {
+    container.replaceChildren();
+    if (!items.length) {
+      const empty = document.createElement('div');
+      empty.className = 'hud-armory-empty';
+      empty.textContent = 'No options available yet';
+      container.appendChild(empty);
+      return;
+    }
+
+    const feathers = local?.feathers ?? 0;
+    const ownedUpgrades = new Set(local?.ownedUpgrades ?? []);
+    const equippedUpgrades = new Set(local?.equippedUpgrades ?? []);
+    const ownedCosmetics = new Set(local?.ownedCosmetics ?? []);
+    const equippedCosmeticId = local?.equippedCosmeticId ?? null;
+
+    for (const item of items) {
+      const card = document.createElement('div');
+      card.className = 'hud-armory-item';
+      card.dataset.itemId = item.id;
+      if (item.kind === 'upgrade' && ownedUpgrades.has(item.id)) {
+        card.classList.add('is-owned');
+      }
+      if (item.kind === 'upgrade' && equippedUpgrades.has(item.id)) {
+        card.classList.add('is-equipped');
+      }
+      if (item.kind === 'cosmetic' && ownedCosmetics.has(item.id)) {
+        card.classList.add('is-owned');
+      }
+      if (item.kind === 'cosmetic' && equippedCosmeticId === item.id) {
+        card.classList.add('is-equipped');
+      }
+
+      const title = document.createElement('h4');
+      title.textContent = item.name;
+      card.appendChild(title);
+
+      const summary = document.createElement('p');
+      summary.className = 'hud-armory-summary';
+      summary.textContent = item.statSummary;
+      card.appendChild(summary);
+
+      const description = document.createElement('p');
+      description.className = 'hud-armory-description';
+      description.textContent = item.description;
+      card.appendChild(description);
+
+      const footer = document.createElement('div');
+      footer.className = 'hud-armory-footer';
+      card.appendChild(footer);
+
+      const costLabel = document.createElement('span');
+      costLabel.className = 'hud-armory-cost';
+      costLabel.textContent = `${item.cost} feathers`;
+      footer.appendChild(costLabel);
+
+      const actionButton = document.createElement('button');
+      actionButton.type = 'button';
+      actionButton.className = 'hud-armory-action';
+      footer.appendChild(actionButton);
+
+      const canPurchase = !!local && (item.kind === 'upgrade' ? !ownedUpgrades.has(item.id) : !ownedCosmetics.has(item.id));
+      if (!canPurchase) {
+        card.classList.toggle('is-locked', !local || (!ownedUpgrades.has(item.id) && item.kind === 'upgrade' && feathers < item.cost) || (!ownedCosmetics.has(item.id) && item.kind === 'cosmetic' && feathers < item.cost));
+      }
+
+      if (!local) {
+        actionButton.disabled = true;
+        actionButton.textContent = 'Unavailable';
+      } else if (item.kind === 'upgrade') {
+        const owned = ownedUpgrades.has(item.id);
+        const equipped = equippedUpgrades.has(item.id);
+        if (!owned) {
+          actionButton.textContent = 'Purchase';
+          actionButton.disabled = feathers < item.cost || !options.onArmoryPurchase;
+          if (!actionButton.disabled) {
+            actionButton.addEventListener('click', () => options.onArmoryPurchase?.(item.id));
+          }
+        } else if (equipped) {
+          actionButton.textContent = 'Unequip';
+          actionButton.disabled = !options.onArmoryEquip;
+          if (!actionButton.disabled) {
+            actionButton.addEventListener('click', () => options.onArmoryEquip?.(item.id, item.slot));
+          }
+        } else {
+          actionButton.textContent = 'Equip';
+          actionButton.disabled = !options.onArmoryEquip;
+          if (!actionButton.disabled) {
+            actionButton.addEventListener('click', () => options.onArmoryEquip?.(item.id, item.slot));
+          }
+        }
+      } else {
+        const owned = ownedCosmetics.has(item.id);
+        const equipped = equippedCosmeticId === item.id;
+        if (!owned) {
+          actionButton.textContent = 'Purchase';
+          actionButton.disabled = feathers < item.cost || !options.onArmoryPurchase;
+          if (!actionButton.disabled) {
+            actionButton.addEventListener('click', () => options.onArmoryPurchase?.(item.id));
+          }
+        } else if (equipped) {
+          actionButton.textContent = 'Equipped';
+          actionButton.disabled = true;
+        } else {
+          actionButton.textContent = 'Equip';
+          actionButton.disabled = !options.onArmoryEquip;
+          if (!actionButton.disabled) {
+            actionButton.addEventListener('click', () => options.onArmoryEquip?.(item.id, 'cosmetic'));
+          }
+        }
+      }
+
+      container.appendChild(card);
+    }
+  }
+
+  function updateArmory(state: ArmoryState, playerId: string | null): void {
+    currentArmory = state;
+    currentPhase = state.phase;
+    armoryPanel.dataset.phase = state.phase;
+    armoryPanel.classList.toggle('is-visible', state.phase !== 'combat');
+
+    const local = state.players.find((player) => player.playerId === playerId) ?? null;
+    localArmory = local;
+    armoryReady = local?.ready ?? false;
+    if (local) {
+      armoryCurrency.innerHTML = `<span>Feathers: ${local.feathers}</span><span>${local.loadoutLabel}</span>`;
+    } else {
+      armoryCurrency.textContent = 'Feathers: —';
+    }
+
+    renderArmoryRoster(state.players, playerId);
+    renderArmoryItems(upgradesList, state.upgrades, local);
+    renderArmoryItems(cosmeticsList, state.cosmetics, local);
+
+    const readyCount = state.players.filter((player) => player.ready).length;
+    const total = state.players.length;
+    launchButton.disabled = state.phase !== 'armory' || !options.onLaunchRun;
+    if (total > 0) {
+      launchButton.textContent = `Launch Sortie (${readyCount}/${total})`;
+    } else {
+      launchButton.textContent = 'Launch Sortie';
+    }
+    launchButton.classList.toggle('is-armed', state.phase === 'armory' && readyCount === total && total > 0);
+
+    updateReadyButton();
+  }
+
   function clearRoster(): void {
     for (const row of rosterDom.values()) {
       row.element.remove();
@@ -316,8 +585,10 @@ export function createHud(parent: HTMLElement, options: HudOptions = {}): Hud {
       artifactSummary.textContent = 'Artifacts: —';
       magnetSummary.textContent = 'Loot Magnet: —';
       hideBossBanner();
-      readyState = false;
-      applyReadyState();
+      currentPhase = currentArmory?.phase ?? 'combat';
+      extractionReady = false;
+      armoryReady = false;
+      updateReadyButton();
       readyButton.disabled = true;
       clearLevelUp();
       clearRoster();
@@ -342,8 +613,9 @@ export function createHud(parent: HTMLElement, options: HudOptions = {}): Hud {
       artifactSummary.textContent = 'Artifacts: —';
       magnetSummary.textContent = 'Loot Magnet: —';
       hideBossBanner();
-      readyState = false;
-      applyReadyState();
+      currentPhase = currentArmory?.phase ?? 'combat';
+      extractionReady = false;
+      updateReadyButton();
       readyButton.disabled = true;
       clearLevelUp();
       clearRoster();
@@ -411,12 +683,13 @@ export function createHud(parent: HTMLElement, options: HudOptions = {}): Hud {
     }
     lastHurtTimer = hurtTimer;
 
-    readyState = player.ready;
-    applyReadyState();
-    readyButton.disabled = false;
+    extractionReady = player.ready;
+    currentPhase = currentArmory?.phase ?? 'combat';
+    updateReadyButton();
 
     updateRoster(snapshot.players, playerId);
     renderObjectives(snapshot.objectives);
+    renderMutators(snapshot.mutators);
 
     const targeted = snapshot.enemies.some((enemy) => enemy.intent === 'windup' && enemy.targetPlayerId === playerId);
     warningLabel.classList.toggle('is-visible', targeted);
@@ -712,6 +985,7 @@ export function createHud(parent: HTMLElement, options: HudOptions = {}): Hud {
 
   return {
     update,
+    updateArmory,
     presentLevelUp,
     lockLevelUp,
     clearLevelUp,

@@ -20,6 +20,7 @@ const KEY_BINDINGS: Record<string, PlayerInputButton> = {
 export class InputController {
   private readonly state: PlayerInputState = createInitialInputState();
   private readonly pressed = new Set<PlayerInputButton>();
+  private enabled = true;
 
   constructor(private readonly getAimDirection: () => number) {
     this.state.aimDirection = 0;
@@ -31,9 +32,25 @@ export class InputController {
   }
 
   getSnapshot(): PlayerInputState {
+    if (!this.enabled) {
+      return createInitialInputState();
+    }
     this.state.aimDirection = this.getAimDirection();
     this.state.aimHeading = this.state.aimDirection;
     return { ...this.state };
+  }
+
+  setEnabled(enabled: boolean): void {
+    if (this.enabled === enabled) {
+      return;
+    }
+    this.enabled = enabled;
+    if (!enabled) {
+      for (const button of this.pressed) {
+        this.state[button] = false;
+      }
+      this.pressed.clear();
+    }
   }
 
   dispose(): void {
@@ -45,6 +62,9 @@ export class InputController {
   }
 
   private handleKeyDown = (event: KeyboardEvent) => {
+    if (!this.enabled) {
+      return;
+    }
     if (event.repeat) {
       return;
     }
@@ -55,6 +75,9 @@ export class InputController {
   };
 
   private handleKeyUp = (event: KeyboardEvent) => {
+    if (!this.enabled) {
+      return;
+    }
     const binding = KEY_BINDINGS[event.code];
     if (binding) {
       this.setButton(binding, false);
@@ -69,6 +92,9 @@ export class InputController {
   };
 
   private handlePointerDown = (event: PointerEvent) => {
+    if (!this.enabled) {
+      return;
+    }
     if (event.button === 0) {
       this.setButton('primaryAbility', true);
     }
@@ -78,6 +104,9 @@ export class InputController {
   };
 
   private handlePointerUp = (event: PointerEvent) => {
+    if (!this.enabled) {
+      return;
+    }
     if (event.button === 0) {
       this.setButton('primaryAbility', false);
     }
@@ -87,6 +116,9 @@ export class InputController {
   };
 
   private setButton(button: PlayerInputButton, value: boolean) {
+    if (!this.enabled) {
+      return;
+    }
     this.state[button] = value;
     if (value) {
       this.pressed.add(button);

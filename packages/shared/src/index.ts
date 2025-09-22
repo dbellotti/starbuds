@@ -1,6 +1,6 @@
 import type { LevelData } from './level';
 
-export const NETWORK_PROTOCOL_VERSION = 3;
+export const NETWORK_PROTOCOL_VERSION = 4;
 export const TICK_RATE = 60;
 export const MAX_PLAYERS = 4;
 
@@ -107,6 +107,59 @@ export function getArtifactDefinition(id: ArtifactKind): ArtifactDefinition {
     throw new Error(`Unknown artifact ${id}`);
   }
   return artifact;
+}
+
+export type GamePhase = 'armory' | 'combat' | 'summary';
+
+export type MutatorCadence = 'daily' | 'weekly';
+
+export interface ActiveMutator {
+  id: string;
+  name: string;
+  description: string;
+  cadence: MutatorCadence;
+  expiresAt: string;
+  impactSummary: string;
+  tags: string[];
+}
+
+export interface ActiveMutators {
+  daily: ActiveMutator;
+  weekly: ActiveMutator;
+}
+
+export type ArmoryItemKind = 'upgrade' | 'cosmetic';
+
+export interface ArmoryItem {
+  id: string;
+  name: string;
+  description: string;
+  cost: number;
+  kind: ArmoryItemKind;
+  slot: 'ability' | 'passive' | 'cosmetic';
+  statSummary: string;
+}
+
+export interface PlayerArmoryState {
+  playerId: string;
+  displayName: string;
+  feathers: number;
+  ready: boolean;
+  equippedUpgrades: string[];
+  ownedUpgrades: string[];
+  ownedCosmetics: string[];
+  equippedCosmeticId: string | null;
+  loadoutLabel: string;
+}
+
+export interface ArmoryState {
+  phase: GamePhase;
+  mutators: ActiveMutators;
+  upgrades: ArmoryItem[];
+  cosmetics: ArmoryItem[];
+  players: PlayerArmoryState[];
+  runNumber: number;
+  updatedAt: number;
 }
 
 export const BASE_PLAYER_DAMAGE = 25;
@@ -238,9 +291,12 @@ export interface PingMessage {
   time: number;
 }
 
+export type ReadyContext = 'armory' | 'extraction';
+
 export interface SetReadyMessage {
   type: 'set-ready';
   ready: boolean;
+  context?: ReadyContext;
 }
 
 export interface QuickPingMessage {
@@ -255,13 +311,31 @@ export interface ChooseAugmentMessage {
   augmentId: AugmentId;
 }
 
+export interface ArmoryPurchaseMessage {
+  type: 'armory-purchase';
+  itemId: string;
+}
+
+export interface ArmoryEquipMessage {
+  type: 'armory-equip';
+  itemId: string;
+  slot?: 'ability' | 'passive' | 'cosmetic';
+}
+
+export interface LaunchRunMessage {
+  type: 'launch-run';
+}
+
 export type ClientMessage =
   | HelloMessage
   | InputMessage
   | PingMessage
   | ChooseAugmentMessage
   | SetReadyMessage
-  | QuickPingMessage;
+  | QuickPingMessage
+  | ArmoryPurchaseMessage
+  | ArmoryEquipMessage
+  | LaunchRunMessage;
 
 export interface WelcomeMessage {
   type: 'welcome';
@@ -271,6 +345,7 @@ export interface WelcomeMessage {
   players: PlayerSummary[];
   roster: RosterEntry[];
   objectives: ObjectiveState;
+  armory: ArmoryState;
 }
 
 export interface SnapshotMessage {
@@ -281,6 +356,17 @@ export interface SnapshotMessage {
 export interface ServerPingMessage {
   type: 'pong';
   time: number;
+}
+
+export interface SnapshotDeltaMessage {
+  type: 'snapshot-delta';
+  baseTick: number;
+  delta: WorldSnapshotDelta;
+}
+
+export interface ArmoryStateMessage {
+  type: 'armory-state';
+  state: ArmoryState;
 }
 
 export interface QuickPingBroadcastMessage {
@@ -319,7 +405,9 @@ export type ServerMessage =
   | LevelUpOfferMessage
   | AugmentAppliedMessage
   | BossSpawnedMessage
-  | QuickPingBroadcastMessage;
+  | QuickPingBroadcastMessage
+  | SnapshotDeltaMessage
+  | ArmoryStateMessage;
 
 export interface EnemyState {
   id: string;
@@ -359,6 +447,22 @@ export interface ArtifactDropState {
   age: number;
 }
 
+export interface EntityDelta<T> {
+  upsert: T[];
+  remove: string[];
+}
+
+export interface WorldSnapshotDelta {
+  tick: number;
+  players?: EntityDelta<PlayerState>;
+  enemies?: EntityDelta<EnemyState>;
+  projectiles?: EntityDelta<ProjectileState>;
+  xpDrops?: EntityDelta<XpDropState>;
+  artifacts?: EntityDelta<ArtifactDropState>;
+  objectives?: ObjectiveState;
+  mutators?: ActiveMutators;
+}
+
 export interface WorldSnapshot {
   tick: number;
   players: PlayerState[];
@@ -367,6 +471,7 @@ export interface WorldSnapshot {
   xpDrops: XpDropState[];
   artifacts: ArtifactDropState[];
   objectives: ObjectiveState;
+  mutators: ActiveMutators;
 }
 
 export interface PlayerState {

@@ -200,6 +200,237 @@ canvas {
   box-shadow: 0 0 12px rgba(99, 102, 241, 0.4);
 }
 
+.hud-mutators {
+  margin-top: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 9px;
+  letter-spacing: 0.6px;
+  color: rgba(191, 219, 254, 0.9);
+}
+
+.hud-mutator {
+  padding: 6px 8px;
+  background: rgba(30, 41, 59, 0.72);
+  border-radius: 6px;
+  border: 1px solid rgba(96, 165, 250, 0.25);
+}
+
+.hud-mutator-daily {
+  border-color: rgba(129, 140, 248, 0.35);
+}
+
+.hud-mutator-weekly {
+  border-color: rgba(248, 113, 113, 0.3);
+}
+
+.hud-armory {
+  position: absolute;
+  top: 132px;
+  right: 24px;
+  width: 320px;
+  max-height: calc(100vh - 164px);
+  overflow-y: auto;
+  padding: 16px 18px;
+  background: rgba(15, 23, 42, 0.88);
+  border: 1px solid rgba(148, 163, 184, 0.28);
+  border-radius: 12px;
+  box-shadow: 0 0 18px rgba(30, 64, 175, 0.32);
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(-12px);
+  transition: opacity 0.25s ease, transform 0.25s ease;
+  z-index: 2;
+}
+
+.hud-armory.is-visible {
+  opacity: 1;
+  pointer-events: auto;
+  transform: translateY(0);
+}
+
+.hud-armory[data-phase="summary"] {
+  border-color: rgba(249, 115, 22, 0.35);
+  box-shadow: 0 0 18px rgba(251, 146, 60, 0.25);
+}
+
+.hud-armory-header {
+  font-size: 12px;
+  letter-spacing: 3px;
+  text-transform: uppercase;
+  color: #93c5fd;
+  margin-bottom: 10px;
+}
+
+.hud-armory-currency {
+  font-size: 11px;
+  color: #facc15;
+  margin-bottom: 12px;
+  display: flex;
+  justify-content: space-between;
+}
+
+.hud-armory-roster {
+  list-style: none;
+  padding: 0;
+  margin: 0 0 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.hud-armory-player {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 6px 8px;
+  font-size: 9px;
+  letter-spacing: 0.6px;
+  background: rgba(30, 41, 59, 0.72);
+  border-radius: 6px;
+  border: 1px solid transparent;
+  color: rgba(226, 232, 240, 0.88);
+}
+
+.hud-armory-player.is-ready {
+  border-color: rgba(34, 197, 94, 0.55);
+  background: rgba(17, 55, 33, 0.72);
+}
+
+.hud-armory-player.is-local {
+  border-color: rgba(129, 140, 248, 0.6);
+  box-shadow: 0 0 10px rgba(99, 102, 241, 0.3);
+}
+
+.hud-armory-sections {
+  display: grid;
+  gap: 16px;
+}
+
+.hud-armory-section h3 {
+  margin: 0 0 8px;
+  font-size: 10px;
+  letter-spacing: 1.5px;
+  text-transform: uppercase;
+  color: rgba(147, 197, 253, 0.9);
+}
+
+.hud-armory-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.hud-armory-empty {
+  font-size: 8px;
+  color: rgba(148, 163, 184, 0.8);
+  padding: 8px;
+  background: rgba(15, 23, 42, 0.6);
+  border-radius: 6px;
+  text-align: center;
+}
+
+.hud-armory-item {
+  background: rgba(15, 23, 42, 0.78);
+  border: 1px solid rgba(100, 116, 139, 0.35);
+  border-radius: 8px;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.hud-armory-item.is-owned {
+  border-color: rgba(96, 165, 250, 0.45);
+}
+
+.hud-armory-item.is-equipped {
+  border-color: rgba(34, 197, 94, 0.45);
+  box-shadow: 0 0 12px rgba(34, 197, 94, 0.3);
+}
+
+.hud-armory-item.is-locked {
+  opacity: 0.6;
+}
+
+.hud-armory-item h4 {
+  margin: 0;
+  font-size: 11px;
+  letter-spacing: 1px;
+  color: #bfdbfe;
+}
+
+.hud-armory-summary {
+  margin: 0;
+  font-size: 9px;
+  color: rgba(226, 232, 240, 0.85);
+}
+
+.hud-armory-description {
+  margin: 0;
+  font-size: 8px;
+  color: rgba(148, 163, 184, 0.85);
+  line-height: 1.5;
+}
+
+.hud-armory-footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+}
+
+.hud-armory-cost {
+  font-size: 8px;
+  color: rgba(250, 204, 21, 0.85);
+}
+
+.hud-armory-action {
+  pointer-events: auto;
+  background: rgba(30, 41, 59, 0.9);
+  border: 1px solid rgba(96, 165, 250, 0.45);
+  color: #e2e8f0;
+  font-family: inherit;
+  font-size: 8px;
+  letter-spacing: 1px;
+  padding: 6px 10px;
+  border-radius: 6px;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+
+.hud-armory-action:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.hud-armory-launch {
+  margin-top: 16px;
+  width: 100%;
+  font-size: 10px;
+  letter-spacing: 2px;
+  text-transform: uppercase;
+  padding: 10px 14px;
+  border-radius: 8px;
+  border: 1px solid rgba(148, 163, 184, 0.35);
+  background: rgba(30, 41, 59, 0.85);
+  color: #e2e8f0;
+  cursor: pointer;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.hud-armory-launch.is-armed {
+  border-color: rgba(34, 197, 94, 0.75);
+  box-shadow: 0 0 16px rgba(34, 197, 94, 0.28);
+}
+
+.hud-armory-launch:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
 .hud-roster-name {
   font-size: 11px;
   color: #f8fafc;

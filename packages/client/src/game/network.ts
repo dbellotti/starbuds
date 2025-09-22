@@ -18,7 +18,12 @@ import {
   RosterEntry,
   ServerMessage,
   Vector2D,
-  WorldSnapshot
+  WorldSnapshot,
+  ArmoryState,
+  ArmoryItem,
+  ReadyContext,
+  WorldSnapshotDelta,
+  EntityDelta
 } from '@farsight/shared';
 
 export type SnapshotListener = (snapshot: WorldSnapshot) => void;
@@ -28,6 +33,7 @@ export type LevelUpOfferListener = (offer: LevelUpOfferMessage) => void;
 export type AugmentAppliedListener = (message: AugmentAppliedMessage) => void;
 export type BossSpawnListener = (message: BossSpawnedMessage) => void;
 export type PingEventListener = (message: QuickPingBroadcastMessage) => void;
+export type ArmoryStateListener = (state: ArmoryState) => void;
 
 interface WelcomeState {
   playerId: string;
@@ -36,6 +42,7 @@ interface WelcomeState {
   players: PlayerSummary[];
   roster: RosterEntry[];
   objectives: ObjectiveState;
+  armory: ArmoryState;
 }
 
 export class GameNetwork {
@@ -45,6 +52,7 @@ export class GameNetwork {
   private playerSummaries: PlayerSummary[] = [];
   private roster: RosterEntry[] = [];
   private latestObjectives: ObjectiveState | null = null;
+  private armory: ArmoryState | null = null;
   private readonly snapshotListeners = new Set<SnapshotListener>();
   private readonly disconnectListeners = new Set<DisconnectListener>();
   private readonly pingListeners = new Set<PingListener>();
@@ -52,9 +60,11 @@ export class GameNetwork {
   private readonly augmentListeners = new Set<AugmentAppliedListener>();
   private readonly bossListeners = new Set<BossSpawnListener>();
   private readonly quickPingListeners = new Set<PingEventListener>();
+  private readonly armoryListeners = new Set<ArmoryStateListener>();
   private inputSequence = 0;
   private pingTimer: number | null = null;
   private latestPingMs = 0;
+  private latestSnapshot: WorldSnapshot | null = null;
 
   async connect(url: string, displayName: string): Promise<WelcomeState> {
     if (this.socket) {
@@ -96,12 +106,15 @@ export class GameNetwork {
             level: data.level,
             players: data.players,
             roster: data.roster,
-            objectives: data.objectives
+            objectives: data.objectives,
+            armory: data.armory
           };
           this.level = data.level;
           this.playerSummaries = data.players;
           this.roster = data.roster;
           this.latestObjectives = data.objectives;
+          this.armory = data.armory;
+          this.emitArmoryState(data.armory);
           this.startPingLoop();
           resolve(this.welcome);
         }
@@ -142,6 +155,10 @@ export class GameNetwork {
     return this.latestObjectives;
   }
 
+  getArmoryState(): ArmoryState | null {
+    return this.armory;
+  }
+
   onSnapshot(listener: SnapshotListener): () => void {
     this.snapshotListeners.add(listener);
     return () => this.snapshotListeners.delete(listener);
@@ -180,6 +197,14 @@ export class GameNetwork {
     return () => this.quickPingListeners.delete(listener);
   }
 
+  onArmoryState(listener: ArmoryStateListener): () => void {
+    this.armoryListeners.add(listener);
+    if (this.armory) {
+      listener(this.armory);
+    }
+    return () => this.armoryListeners.delete(listener);
+  }
+
   sendInput(state: InputMessage['state']): void {
     if (!this.socket || this.socket.readyState !== WebSocket.OPEN) {
       return;
@@ -204,7 +229,7 @@ export class GameNetwork {
     this.socket.send(JSON.stringify(message satisfies ClientMessage));
   }
 
-  setReady(ready: boolean): void {
+  setReady(ready: boolean, context: ReadyContext = 'extraction'): void {
     if (!this.socket || this.socket.readyState !== WebSocket.OPEN) {
       return;
     }
@@ -212,7 +237,8 @@ export class GameNetwork {
       JSON.stringify(
         {
           type: 'set-ready',
-          ready
+          ready,
+          context
         } satisfies ClientMessage
       )
     );
@@ -230,6 +256,48 @@ export class GameNetwork {
     this.socket.send(JSON.stringify(message satisfies ClientMessage));
   }
 
+  purchaseArmoryItem(itemId: string): void {
+    if (!this.socket || this.socket.readyState !== WebSocket.OPEN) {
+      return;
+    }
+    this.socket.send(
+      JSON.stringify(
+        {
+          type: 'armory-purchase',
+          itemId
+        } satisfies ClientMessage
+      )
+    );
+  }
+
+  equipArmoryItem(itemId: string, slot?: ArmoryItem['slot']): void {
+    if (!this.socket || this.socket.readyState !== WebSocket.OPEN) {
+      return;
+    }
+    this.socket.send(
+      JSON.stringify(
+        {
+          type: 'armory-equip',
+          itemId,
+          slot
+        } satisfies ClientMessage
+      )
+    );
+  }
+
+  launchRun(): void {
+    if (!this.socket || this.socket.readyState !== WebSocket.OPEN) {
+      return;
+    }
+    this.socket.send(
+      JSON.stringify(
+        {
+          type: 'launch-run'
+        } satisfies ClientMessage
+      )
+    );
+  }
+
   dispose(): void {
     this.disposeSocket();
     this.snapshotListeners.clear();
@@ -238,6 +306,8 @@ export class GameNetwork {
     this.levelUpListeners.clear();
     this.augmentListeners.clear();
     this.bossListeners.clear();
+    this.quickPingListeners.clear();
+    this.armoryListeners.clear();
   }
 
   private disposeSocket(): void {
@@ -263,6 +333,8 @@ export class GameNetwork {
     this.roster = [];
     this.latestObjectives = null;
     this.latestPingMs = 0;
+    this.armory = null;
+    this.latestSnapshot = null;
   }
 
   private handleMessage = (event: MessageEvent<string>) => {
@@ -286,8 +358,37 @@ export class GameNetwork {
           augmentCount: player.augments.length
         }));
         this.latestObjectives = message.snapshot.objectives;
+        this.latestSnapshot = message.snapshot;
         for (const listener of this.snapshotListeners) {
           listener(message.snapshot);
+        }
+        break;
+      }
+      case 'snapshot-delta': {
+        if (!this.latestSnapshot) {
+          break;
+        }
+        if (this.latestSnapshot.tick !== message.baseTick) {
+          console.warn('Snapshot delta base mismatch', message.baseTick, this.latestSnapshot.tick);
+          break;
+        }
+        const merged = applySnapshotDelta(this.latestSnapshot, message.delta);
+        this.latestSnapshot = merged;
+        this.playerSummaries = merged.players.map((player) => ({
+          id: player.id,
+          displayName: player.displayName
+        }));
+        this.roster = merged.players.map((player) => ({
+          id: player.id,
+          displayName: player.displayName,
+          level: player.psychicLevel,
+          ready: player.ready,
+          lastAugmentId: player.lastAugmentId,
+          augmentCount: player.augments.length
+        }));
+        this.latestObjectives = merged.objectives;
+        for (const listener of this.snapshotListeners) {
+          listener(merged);
         }
         break;
       }
@@ -321,6 +422,11 @@ export class GameNetwork {
         for (const listener of this.quickPingListeners) {
           listener(message);
         }
+        break;
+      }
+      case 'armory-state': {
+        this.armory = message.state;
+        this.emitArmoryState(message.state);
         break;
       }
       case 'welcome': {
@@ -362,6 +468,12 @@ export class GameNetwork {
       this.socket.send(JSON.stringify(ping satisfies ClientMessage));
     }, 2000);
   }
+
+  private emitArmoryState(state: ArmoryState): void {
+    for (const listener of this.armoryListeners) {
+      listener(state);
+    }
+  }
 }
 
 function parseServerMessage(data: string): ServerMessage | null {
@@ -371,4 +483,33 @@ function parseServerMessage(data: string): ServerMessage | null {
     console.warn('Failed to parse server payload', error);
     return null;
   }
+}
+
+function applySnapshotDelta(previous: WorldSnapshot, delta: WorldSnapshotDelta): WorldSnapshot {
+  return {
+    tick: delta.tick,
+    players: applyEntityDelta(previous.players, delta.players),
+    enemies: applyEntityDelta(previous.enemies, delta.enemies),
+    projectiles: applyEntityDelta(previous.projectiles, delta.projectiles),
+    xpDrops: applyEntityDelta(previous.xpDrops, delta.xpDrops),
+    artifacts: applyEntityDelta(previous.artifacts, delta.artifacts),
+    objectives: delta.objectives ?? previous.objectives,
+    mutators: delta.mutators ?? previous.mutators
+  };
+}
+
+function applyEntityDelta<T extends { id: string }>(previous: T[], change?: EntityDelta<T>): T[] {
+  if (!change) {
+    return previous;
+  }
+  const next = previous.filter((entity) => !change.remove.includes(entity.id));
+  for (const entity of change.upsert) {
+    const index = next.findIndex((existing) => existing.id === entity.id);
+    if (index === -1) {
+      next.push(entity);
+    } else {
+      next[index] = entity;
+    }
+  }
+  return next;
 }

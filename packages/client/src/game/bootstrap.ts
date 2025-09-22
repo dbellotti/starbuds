@@ -36,6 +36,7 @@ import {
   WebGLRenderer
 } from 'three';
 import type {
+  ArmoryState,
   ArtifactKind,
   EnemyKind,
   EnemyState,
@@ -44,8 +45,10 @@ import type {
   ProjectileFaction,
   WorldSnapshot,
   LevelUpOfferMessage,
-  QuickPingKind
+  QuickPingKind,
+  GamePhase
 } from '@farsight/shared';
+import { createInitialInputState } from '@farsight/shared';
 import { ARTIFACT_TTL, PLAYER_HURT_FLASH_TIME, PROJECTILE_LIFETIME, TILE_SIZE, TICK_RATE } from '@farsight/shared';
 import { InputController } from './input';
 import { GameNetwork } from './network';
@@ -101,8 +104,17 @@ export async function bootstrapGame(): Promise<void> {
   const worldRenderer = new WorldRenderer(scene);
   const network = new GameNetwork();
   const hud = createHud(mountNode, {
-    onReadyChange: (ready) => {
-      network.setReady(ready);
+    onReadyChange: (ready, context) => {
+      network.setReady(ready, context);
+    },
+    onArmoryPurchase: (itemId) => {
+      network.purchaseArmoryItem(itemId);
+    },
+    onArmoryEquip: (itemId, slot) => {
+      network.equipArmoryItem(itemId, slot);
+    },
+    onLaunchRun: () => {
+      network.launchRun();
     }
   });
   const debug = createDebugOverlay(mountNode);
@@ -126,6 +138,9 @@ export async function bootstrapGame(): Promise<void> {
   handleResize(renderer, camera);
 
   const pointerWorld = new Vector2();
+  let playerId: string | null = null;
+  let currentPhase: GamePhase = 'combat';
+  let liveArmoryState: ArmoryState | null = null;
   let pointerClientX = window.innerWidth / 2;
   let pointerClientY = window.innerHeight / 2;
   let inputInterval: number | null = null;
@@ -135,6 +150,8 @@ export async function bootstrapGame(): Promise<void> {
   let snapshotRateSmooth = TICK_RATE;
   let fpsSmooth = 60;
   let cameraMode: 'top' | 'tilt' = 'top';
+  let cameraZoom = 1;
+  let zoomSequence: { remaining: number; duration: number; magnitude: number } | null = null;
   const levelUpQueue: LevelUpOfferMessage[] = [];
   let activeLevelUp: LevelUpOfferMessage | null = null;
   let awaitingAugment = false;
@@ -198,6 +215,9 @@ export async function bootstrapGame(): Promise<void> {
       hud.cancelPingSelection();
     }
   });
+  const triggerZoom = (magnitude: number, duration = 0.75) => {
+    zoomSequence = { remaining: duration, duration, magnitude };
+  };
   const presentNextOffer = (): boolean => {
     if (awaitingAugment || activeLevelUp || levelUpQueue.length === 0) {
       return false;
@@ -218,6 +238,7 @@ export async function bootstrapGame(): Promise<void> {
         network.chooseAugment(offer.offerId, augmentId);
       }
     );
+    triggerZoom(0.18, 0.65);
     return true;
   };
   const detachPing = network.onPing((latency) => {
@@ -227,6 +248,19 @@ export async function bootstrapGame(): Promise<void> {
     const isLocal = message.playerId === network.getPlayerId();
     hud.showPingAlert(message, isLocal);
     worldRenderer.spawnPing(message.position.x, message.position.y, message.kind, isLocal);
+  });
+  const detachArmory = network.onArmoryState((state) => {
+    liveArmoryState = state;
+    currentPhase = state.phase;
+    hud.updateArmory(state, network.getPlayerId());
+    inputController.setEnabled(currentPhase === 'combat');
+    audio.setPhase(currentPhase);
+    if (currentPhase !== 'combat') {
+      zoomSequence = null;
+      cameraZoom = 1;
+      camera.zoom = 1;
+      camera.updateProjectionMatrix();
+    }
   });
   network.onSnapshot((snapshot) => {
     const now = performance.now();
@@ -244,6 +278,9 @@ export async function bootstrapGame(): Promise<void> {
 
     worldRenderer.applySnapshot(snapshot);
     hud.update(snapshot, network.getPlayerId());
+    const playerCount = Math.max(1, snapshot.players.length);
+    const intensity = Math.min(1, snapshot.enemies.length / (playerCount * 8));
+    audio.setIntensity(intensity);
   });
   detachLevelUp = network.onLevelUpOffer((offer) => {
     if (offer.playerId !== network.getPlayerId()) {
@@ -277,6 +314,7 @@ export async function bootstrapGame(): Promise<void> {
   detachBoss = network.onBossSpawn((message) => {
     hud.showBossSpawn(message.kind);
     audio.playBossSpawn();
+    triggerZoom(0.24, 0.85);
   });
   network.onDisconnect(() => {
     if (inputInterval !== null) {
@@ -291,10 +329,19 @@ export async function bootstrapGame(): Promise<void> {
     awaitingAugment = false;
     hud.clearLevelUp();
     hud.cancelPingSelection();
+    detachArmory();
     detachLevelUp?.();
     detachAugment?.();
     detachBoss?.();
     detachQuickPing();
+    liveArmoryState = null;
+    currentPhase = 'combat';
+    inputController.setEnabled(true);
+    audio.setPhase('combat');
+    zoomSequence = null;
+    cameraZoom = 1;
+    camera.zoom = 1;
+    camera.updateProjectionMatrix();
     detachLevelUp = null;
     detachAugment = null;
     detachBoss = null;
@@ -307,8 +354,14 @@ export async function bootstrapGame(): Promise<void> {
     const welcome = await network.connect(serverUrl, displayName);
     worldRenderer.applyLevel(welcome.level);
     worldRenderer.setLocalPlayerId(welcome.playerId);
+    playerId = welcome.playerId;
     serverTickRate = welcome.tickRate;
     snapshotRateSmooth = welcome.tickRate;
+    liveArmoryState = welcome.armory;
+    currentPhase = welcome.armory.phase;
+    hud.updateArmory(welcome.armory, welcome.playerId);
+    inputController.setEnabled(currentPhase === 'combat');
+    audio.setPhase(currentPhase);
     console.info(`Connected to server as ${welcome.playerId}`);
     console.info(`Level seed ${welcome.level.seed}`);
   } catch (error) {
@@ -329,7 +382,11 @@ export async function bootstrapGame(): Promise<void> {
   }
 
   inputInterval = window.setInterval(() => {
-    network.sendInput(inputController.getSnapshot());
+    if (currentPhase !== 'combat') {
+      network.sendInput(createInitialInputState());
+    } else {
+      network.sendInput(inputController.getSnapshot());
+    }
   }, INPUT_RATE_MS);
 
   let lastTime = performance.now();
@@ -339,6 +396,23 @@ export async function bootstrapGame(): Promise<void> {
 
     worldRenderer.update(deltaSeconds);
     followCamera(camera, worldRenderer, deltaSeconds, cameraMode);
+
+    if (zoomSequence) {
+      zoomSequence.remaining = Math.max(0, zoomSequence.remaining - deltaSeconds);
+      const progress = 1 - zoomSequence.remaining / zoomSequence.duration;
+      const envelope = Math.sin(progress * Math.PI);
+      const targetZoom = 1 + zoomSequence.magnitude * envelope;
+      cameraZoom = MathUtils.lerp(cameraZoom, targetZoom, 0.18);
+      if (zoomSequence.remaining <= 0) {
+        zoomSequence = null;
+      }
+    } else {
+      cameraZoom = MathUtils.lerp(cameraZoom, 1, 0.08);
+    }
+    if (Math.abs(camera.zoom - cameraZoom) > 0.001) {
+      camera.zoom = cameraZoom;
+      camera.updateProjectionMatrix();
+    }
 
     if (deltaSeconds > 0) {
       const fpsInstant = 1 / deltaSeconds;
@@ -360,6 +434,7 @@ export async function bootstrapGame(): Promise<void> {
     network.dispose();
     hud.dispose();
     detachPing();
+    detachArmory();
     detachLevelUp?.();
     detachAugment?.();
     detachBoss?.();
@@ -385,6 +460,26 @@ const emptySnapshot: WorldSnapshot = {
     extractionReady: false,
     extractionCountdown: null,
     extractionPosition: null
+  },
+  mutators: {
+    daily: {
+      id: 'none',
+      name: 'Calm Skies',
+      description: 'No active daily mutator',
+      impactSummary: 'Baseline conditions',
+      cadence: 'daily',
+      expiresAt: new Date().toISOString(),
+      tags: []
+    },
+    weekly: {
+      id: 'none',
+      name: 'Standard Protocol',
+      description: 'No active weekly mutator',
+      impactSummary: 'Baseline conditions',
+      cadence: 'weekly',
+      expiresAt: new Date().toISOString(),
+      tags: []
+    }
   }
 };
 
@@ -567,6 +662,9 @@ class WorldRenderer {
     const seenXp = new Set<string>();
     const seenArtifacts = new Set<string>();
     const targetedCounts = new Map<string, number>();
+    const focus = this.getLocalPlayerPosition();
+    const enemyCullRadiusSq = focus ? 900 * 900 : Number.POSITIVE_INFINITY;
+    const projectileCullRadiusSq = focus ? 1100 * 1100 : Number.POSITIVE_INFINITY;
 
     for (const player of snapshot.players) {
       let avatar = this.players.get(player.id);
@@ -589,6 +687,13 @@ class WorldRenderer {
         avatar.reset(enemy.id, enemy.kind);
       }
       avatar.setState(enemy);
+      if (focus) {
+        const dx = enemy.position.x - focus.x;
+        const dy = enemy.position.y - focus.y;
+        avatar.setVisibility(dx * dx + dy * dy <= enemyCullRadiusSq);
+      } else {
+        avatar.setVisibility(true);
+      }
       seenEnemies.add(enemy.id);
       if (enemy.targetPlayerId && enemy.intent === 'windup') {
         targetedCounts.set(enemy.targetPlayerId, (targetedCounts.get(enemy.targetPlayerId) ?? 0) + 1);
@@ -613,6 +718,13 @@ class WorldRenderer {
         projectile.ttl,
         projectile.power
       );
+      if (focus) {
+        const dx = projectile.position.x - focus.x;
+        const dy = projectile.position.y - focus.y;
+        avatar.setVisibility(dx * dx + dy * dy <= projectileCullRadiusSq);
+      } else {
+        avatar.setVisibility(true);
+      }
       seenProjectiles.add(projectile.id);
       if (created && projectile.faction === 'player') {
         const owner = this.players.get(projectile.ownerId);
@@ -1508,6 +1620,13 @@ class EnemyAvatar {
     return this.kind;
   }
 
+  setVisibility(visible: boolean): void {
+    this.mesh.visible = visible;
+    if (!visible) {
+      this.telegraph.visible = false;
+    }
+  }
+
   release(): void {
     if (this.mesh.parent) {
       this.mesh.parent.remove(this.mesh);
@@ -1543,6 +1662,9 @@ class EnemyAvatar {
   }
 
   update(deltaSeconds: number): void {
+    if (!this.mesh.visible) {
+      return;
+    }
     this.time += deltaSeconds;
     const lerpFactor = Math.min(1, deltaSeconds * 6);
     this.currentPosition.lerp(this.targetPosition, lerpFactor);
@@ -1717,6 +1839,11 @@ class ProjectileAvatar {
     return this.impactColor;
   }
 
+  setVisibility(visible: boolean): void {
+    this.mesh.visible = visible;
+    this.trail.visible = visible;
+  }
+
   setState(x: number, y: number, vx: number, vy: number, ttl: number, power: number): void {
     this.targetPosition.set(x, y);
     if (!this.initialized) {
@@ -1732,6 +1859,9 @@ class ProjectileAvatar {
   }
 
   update(deltaSeconds: number): void {
+    if (!this.mesh.visible) {
+      return;
+    }
     const lerpFactor = Math.min(1, deltaSeconds * 18);
     this.currentPosition.lerp(this.targetPosition, lerpFactor);
     this.currentFacing = MathUtils.lerp(this.currentFacing, this.targetFacing, lerpFactor);

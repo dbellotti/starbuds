@@ -48,7 +48,16 @@ import {
   AugmentId,
   getAugmentOption,
   ProjectileFaction,
-  ArtifactKind
+  ArtifactKind,
+  ArmoryState,
+  ArmoryItem,
+  GamePhase,
+  ActiveMutators,
+  ReadyContext,
+  MutatorCadence,
+  PlayerArmoryState,
+  EntityDelta,
+  WorldSnapshotDelta
 } from '@farsight/shared';
 
 const TICK_INTERVAL_MS = 1000 / TICK_RATE;
@@ -127,6 +136,463 @@ type WorldEvent =
   | { type: 'broadcast'; message: ServerMessage }
   | { type: 'target'; targetId: string; message: ServerMessage };
 
+interface PlayerRunSummary {
+  id: string;
+  displayName: string;
+  psychicLevel: number;
+  augments: AugmentId[];
+  artifacts: ArtifactKind[];
+  damageTaken: number;
+  xpCollected: number;
+}
+
+interface RunSummary {
+  tick: number;
+  wave: number;
+  totalKills: number;
+  playerStats: PlayerRunSummary[];
+}
+
+interface ArmoryPlayerMeta {
+  id: string;
+  displayName: string;
+  feathers: number;
+  ready: boolean;
+  ownedUpgrades: Set<string>;
+  equippedUpgrades: string[];
+  ownedCosmetics: Set<string>;
+  equippedCosmeticId: string | null;
+  loadoutLabel: string;
+}
+
+interface MutatorTemplate {
+  id: string;
+  name: string;
+  description: string;
+  impactSummary: string;
+  tags: string[];
+}
+
+const MAX_EQUIPPED_UPGRADES = 3;
+
+const ARMORY_UPGRADES: ArmoryItem[] = [
+  {
+    id: 'focus-matrix',
+    name: 'Focus Matrix',
+    description: 'Channelled psionic lattice that amplifies baseline bolt damage.',
+    cost: 180,
+    kind: 'upgrade',
+    slot: 'ability',
+    statSummary: '+12% bolt damage'
+  },
+  {
+    id: 'celerity-core',
+    name: 'Celerity Core',
+    description: 'Temporal dampers shave milliseconds off each channel.',
+    cost: 220,
+    kind: 'upgrade',
+    slot: 'ability',
+    statSummary: '-15% ability cooldowns'
+  },
+  {
+    id: 'bulwark-weave',
+    name: 'Bulwark Weave',
+    description: 'Layered ward-feather plating that bolsters vitality.',
+    cost: 200,
+    kind: 'upgrade',
+    slot: 'passive',
+    statSummary: '+40 max health'
+  },
+  {
+    id: 'rift-channeler',
+    name: 'Rift Channeler',
+    description: 'Splitting prism etched for clean bolt echoes.',
+    cost: 260,
+    kind: 'upgrade',
+    slot: 'ability',
+    statSummary: '+1 bolt split & +8% projectile speed'
+  },
+  {
+    id: 'magnet-surge',
+    name: 'Magnet Surge',
+    description: 'Feathered coils widen the ambient pull of loose XP.',
+    cost: 180,
+    kind: 'upgrade',
+    slot: 'passive',
+    statSummary: '+20% magnet radius & +50 pull speed'
+  }
+];
+
+const ARMORY_COSMETICS: ArmoryItem[] = [
+  {
+    id: 'cosmic-plumage',
+    name: 'Cosmic Plumage',
+    description: 'Aurora-tinted feathers with soft nebula bloom.',
+    cost: 140,
+    kind: 'cosmetic',
+    slot: 'cosmetic',
+    statSummary: 'Visual: aurora glow'
+  },
+  {
+    id: 'ember-sheen',
+    name: 'Ember Sheen',
+    description: 'Smouldering plumage leaving faint ember trails.',
+    cost: 160,
+    kind: 'cosmetic',
+    slot: 'cosmetic',
+    statSummary: 'Visual: ember trail'
+  },
+  {
+    id: 'midnight-veil',
+    name: 'Midnight Veil',
+    description: 'Deep-indigo coat with starlit speckles.',
+    cost: 130,
+    kind: 'cosmetic',
+    slot: 'cosmetic',
+    statSummary: 'Visual: starlit shimmer'
+  },
+  {
+    id: 'suncrest',
+    name: 'Suncrest',
+    description: 'Bold gold/ochre plumage celebrating daytime sorties.',
+    cost: 150,
+    kind: 'cosmetic',
+    slot: 'cosmetic',
+    statSummary: 'Visual: sunburst crest'
+  }
+];
+
+const MUTATOR_LIBRARY: MutatorTemplate[] = [
+  {
+    id: 'glass-cannon',
+    name: 'Glass Cannon',
+    description: 'Squad bolts strike harder but vitality thins.',
+    impactSummary: '+25% bolt damage / -20% max health',
+    tags: ['challenge', 'damage']
+  },
+  {
+    id: 'overgrowth',
+    name: 'Overgrowth',
+    description: 'The arena floods with restless wildlife.',
+    impactSummary: '+18% enemy spawns',
+    tags: ['horde', 'environment']
+  },
+  {
+    id: 'aerial-superiority',
+    name: 'Aerial Superiority',
+    description: 'Hawks take to the skies with renewed ferocity.',
+    impactSummary: 'Hawk dive speed +20%',
+    tags: ['enemy', 'movement']
+  },
+  {
+    id: 'psionic-storm',
+    name: 'Psionic Storm',
+    description: 'Ambient static supercharges artifacts and abilities.',
+    impactSummary: '+15% cooldown haste & artifact shield refresh',
+    tags: ['bonus', 'abilities']
+  },
+  {
+    id: 'orbital-drill',
+    name: 'Orbital Drill',
+    description: 'Periodic tremors stagger beasts but distort aim.',
+    impactSummary: 'Random screen shake pulses & +5% projectile sway',
+    tags: ['hazard', 'control']
+  }
+];
+
+function hashToIndex(seed: string, modulo: number): number {
+  let hash = 0;
+  for (let i = 0; i < seed.length; i += 1) {
+    hash = (hash * 31 + seed.charCodeAt(i)) >>> 0;
+  }
+  return modulo === 0 ? 0 : hash % modulo;
+}
+
+function computeMutatorExpiry(cadence: MutatorCadence, reference: Date): string {
+  const expiry = new Date(reference);
+  if (cadence === 'daily') {
+    expiry.setUTCHours(0, 0, 0, 0);
+    expiry.setUTCDate(expiry.getUTCDate() + 1);
+  } else {
+    const day = expiry.getUTCDay();
+    const daysUntilMonday = (8 - day) % 7 || 7;
+    expiry.setUTCHours(0, 0, 0, 0);
+    expiry.setUTCDate(expiry.getUTCDate() + daysUntilMonday);
+  }
+  return expiry.toISOString();
+}
+
+function pickMutator(seed: string): MutatorTemplate {
+  if (MUTATOR_LIBRARY.length === 0) {
+    return {
+      id: 'placeholder',
+      name: 'Placeholder',
+      description: 'No mutators configured',
+      impactSummary: '—',
+      tags: []
+    };
+  }
+  const index = hashToIndex(seed, MUTATOR_LIBRARY.length);
+  return MUTATOR_LIBRARY[index];
+}
+
+function generateActiveMutators(now = new Date()): ActiveMutators {
+  const dailySeed = `${now.getUTCFullYear()}-${now.getUTCMonth()}-${now.getUTCDate()}`;
+  const weekNumber = Math.floor((Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()) - Date.UTC(now.getUTCFullYear(), 0, 1)) / (7 * 24 * 60 * 60 * 1000));
+  const weeklySeed = `${now.getUTCFullYear()}-w${weekNumber}`;
+  const dailyTemplate = pickMutator(`daily:${dailySeed}`);
+  const weeklyTemplate = pickMutator(`weekly:${weeklySeed}`);
+  const daily: ActiveMutators['daily'] = {
+    ...dailyTemplate,
+    cadence: 'daily',
+    expiresAt: computeMutatorExpiry('daily', now)
+  };
+  const weekly: ActiveMutators['weekly'] = {
+    ...weeklyTemplate,
+    cadence: 'weekly',
+    expiresAt: computeMutatorExpiry('weekly', now)
+  };
+  return { daily, weekly };
+}
+
+class ArmoryManager {
+  private readonly players = new Map<string, ArmoryPlayerMeta>();
+  private mutators: ActiveMutators = generateActiveMutators();
+  private lastMutatorCheck = Date.now();
+
+  ensurePlayer(id: string, displayName: string): ArmoryPlayerMeta {
+    let player = this.players.get(id);
+    if (!player) {
+      player = {
+        id,
+        displayName,
+        feathers: 180,
+        ready: false,
+        ownedUpgrades: new Set(),
+        equippedUpgrades: [],
+        ownedCosmetics: new Set(),
+        equippedCosmeticId: null,
+        loadoutLabel: 'Standard Issue'
+      };
+      this.players.set(id, player);
+    }
+    player.displayName = displayName;
+    return player;
+  }
+
+  removePlayer(id: string): void {
+    this.players.delete(id);
+  }
+
+  refreshMutators(now = Date.now()): boolean {
+    if (now - this.lastMutatorCheck < 60_000) {
+      return false;
+    }
+    this.lastMutatorCheck = now;
+    const expiryDaily = Date.parse(this.mutators.daily.expiresAt ?? '');
+    const expiryWeekly = Date.parse(this.mutators.weekly.expiresAt ?? '');
+    if (Number.isNaN(expiryDaily) || now >= expiryDaily || Number.isNaN(expiryWeekly) || now >= expiryWeekly) {
+      this.mutators = generateActiveMutators(new Date(now));
+      return true;
+    }
+    return false;
+  }
+
+  getMutators(): ActiveMutators {
+    return this.mutators;
+  }
+
+  getPlayer(id: string): ArmoryPlayerMeta | null {
+    return this.players.get(id) ?? null;
+  }
+
+  setReady(id: string, ready: boolean): void {
+    const player = this.players.get(id);
+    if (!player) {
+      return;
+    }
+    player.ready = ready;
+  }
+
+  resetReady(): void {
+    for (const player of this.players.values()) {
+      player.ready = false;
+    }
+  }
+
+  allReady(): boolean {
+    let hasPlayers = false;
+    for (const player of this.players.values()) {
+      hasPlayers = true;
+      if (!player.ready) {
+        return false;
+      }
+    }
+    return hasPlayers;
+  }
+
+  grantFeathers(id: string, amount: number): void {
+    const player = this.players.get(id);
+    if (!player) {
+      return;
+    }
+    player.feathers = Math.max(0, Math.round(player.feathers + amount));
+  }
+
+  grantRunRewards(summary: RunSummary): void {
+    const baseReward = 16 + summary.wave * 4;
+    for (const stats of summary.playerStats) {
+      const player = this.players.get(stats.id);
+      if (!player) {
+        continue;
+      }
+      const xpBonus = Math.round(stats.xpCollected / 60);
+      const artifactBonus = stats.artifacts.length * 8;
+      this.grantFeathers(player.id, baseReward + xpBonus + artifactBonus);
+      player.ready = false;
+    }
+  }
+
+  purchase(id: string, itemId: string): { success: boolean; error?: string } {
+    const player = this.players.get(id);
+    if (!player) {
+      return { success: false, error: 'unknown-player' };
+    }
+    const allItems = [...ARMORY_UPGRADES, ...ARMORY_COSMETICS];
+    const item = allItems.find((entry) => entry.id === itemId);
+    if (!item) {
+      return { success: false, error: 'unknown-item' };
+    }
+    if (item.kind === 'upgrade' && player.ownedUpgrades.has(item.id)) {
+      return { success: false, error: 'already-owned' };
+    }
+    if (item.kind === 'cosmetic' && player.ownedCosmetics.has(item.id)) {
+      return { success: false, error: 'already-owned' };
+    }
+    if (player.feathers < item.cost) {
+      return { success: false, error: 'insufficient-funds' };
+    }
+    player.feathers -= item.cost;
+    if (item.kind === 'upgrade') {
+      player.ownedUpgrades.add(item.id);
+      if (player.equippedUpgrades.length < MAX_EQUIPPED_UPGRADES) {
+        player.equippedUpgrades.push(item.id);
+      }
+    } else {
+      player.ownedCosmetics.add(item.id);
+      if (!player.equippedCosmeticId) {
+        player.equippedCosmeticId = item.id;
+      }
+    }
+    player.ready = false;
+    return { success: true };
+  }
+
+  equip(id: string, itemId: string, slot?: ArmoryItem['slot']): { success: boolean; error?: string } {
+    const player = this.players.get(id);
+    if (!player) {
+      return { success: false, error: 'unknown-player' };
+    }
+    if (slot === 'cosmetic') {
+      if (!player.ownedCosmetics.has(itemId)) {
+        return { success: false, error: 'not-owned' };
+      }
+      player.equippedCosmeticId = itemId;
+      player.ready = false;
+      return { success: true };
+    }
+    if (!player.ownedUpgrades.has(itemId)) {
+      return { success: false, error: 'not-owned' };
+    }
+    const existingIndex = player.equippedUpgrades.indexOf(itemId);
+    if (existingIndex !== -1) {
+      player.equippedUpgrades.splice(existingIndex, 1);
+      player.ready = false;
+      return { success: true };
+    }
+    if (player.equippedUpgrades.length >= MAX_EQUIPPED_UPGRADES) {
+      player.equippedUpgrades.shift();
+    }
+    player.equippedUpgrades.push(itemId);
+    player.ready = false;
+    return { success: true };
+  }
+
+  applyLoadout(player: PlayerSimState, world: GameWorld): void {
+    const meta = this.players.get(player.id);
+    if (!meta) {
+      return;
+    }
+    player.damageMultiplier = 1;
+    player.cooldownMultiplier = 1;
+    player.projectileSpeedMultiplier = 1;
+    player.splitShots = 0;
+    player.healthGrowthMultiplier = 1;
+    player.maxHealth = 120;
+    player.health = player.maxHealth;
+    player.lootMagnetRadius = LOOT_MAGNET_BASE_RADIUS * 0.6;
+    player.lootMagnetLevel = 0;
+
+    for (const upgrade of meta.equippedUpgrades) {
+      switch (upgrade) {
+        case 'focus-matrix':
+          player.damageMultiplier *= 1.12;
+          break;
+        case 'celerity-core':
+          player.cooldownMultiplier *= 0.85;
+          break;
+        case 'bulwark-weave':
+          player.maxHealth += 40;
+          player.health = player.maxHealth;
+          break;
+        case 'rift-channeler':
+          player.splitShots = Math.min(player.splitShots + 1, 3);
+          player.projectileSpeedMultiplier *= 1.08;
+          break;
+        case 'magnet-surge':
+          player.lootMagnetLevel += 2;
+          break;
+      }
+    }
+
+    if (this.mutators.daily.id === 'glass-cannon') {
+      player.damageMultiplier *= 1.25;
+      player.maxHealth = Math.round(player.maxHealth * 0.8);
+      player.health = player.maxHealth;
+    }
+    if (this.mutators.daily.id === 'psionic-storm' || this.mutators.weekly.id === 'psionic-storm') {
+      player.cooldownMultiplier *= 0.85;
+    }
+    world.recalcLootMagnet(player);
+  }
+
+  buildState(phase: GamePhase, runNumber: number): ArmoryState {
+    const players: PlayerArmoryState[] = [];
+    for (const player of this.players.values()) {
+      players.push({
+        playerId: player.id,
+        displayName: player.displayName,
+        feathers: player.feathers,
+        ready: player.ready,
+        equippedUpgrades: [...player.equippedUpgrades],
+        ownedUpgrades: Array.from(player.ownedUpgrades),
+        ownedCosmetics: Array.from(player.ownedCosmetics),
+        equippedCosmeticId: player.equippedCosmeticId,
+        loadoutLabel: player.loadoutLabel
+      });
+    }
+    return {
+      phase,
+      mutators: this.mutators,
+      upgrades: ARMORY_UPGRADES,
+      cosmetics: ARMORY_COSMETICS,
+      players,
+      runNumber,
+      updatedAt: Date.now()
+    };
+  }
+}
+
 class GameWorld {
   tick = 0;
   players = new Map<string, PlayerSimState>();
@@ -157,6 +623,9 @@ class GameWorld {
     augmentPicks: new Map<AugmentId, number>(),
     artifactsPicked: new Map<ArtifactKind, number>()
   };
+  private pendingRunSummary: RunSummary | null = null;
+  private mutatorEnemySpawnMultiplier = 1;
+  private mutatorHawkSpeedMultiplier = 1;
 
   constructor() {
     this.level = generateLevel(LEVEL_CONFIG);
@@ -259,7 +728,14 @@ class GameWorld {
     }
   }
 
-  snapshot(): WorldSnapshot {
+  setMutators(mutators: ActiveMutators): void {
+    const overgrowth = mutators.daily.id === 'overgrowth' || mutators.weekly.id === 'overgrowth';
+    const aerial = mutators.daily.id === 'aerial-superiority' || mutators.weekly.id === 'aerial-superiority';
+    this.mutatorEnemySpawnMultiplier = overgrowth ? 1.18 : 1;
+    this.mutatorHawkSpeedMultiplier = aerial ? 1.2 : 1;
+  }
+
+  snapshot(mutators: ActiveMutators): WorldSnapshot {
     return {
       tick: this.tick,
       players: Array.from(this.players.values()).map((player) => ({
@@ -305,7 +781,8 @@ class GameWorld {
         position: drop.position,
         age: drop.age
       })),
-      objectives: this.buildObjectiveState()
+      objectives: this.buildObjectiveState(),
+      mutators
     };
   }
 
@@ -386,7 +863,13 @@ class GameWorld {
       if (!this.areAllPlayersReady()) {
         this.extractionCountdown = null;
       } else {
+        const previous = this.extractionCountdown;
         this.extractionCountdown = Math.max(0, this.extractionCountdown - deltaSeconds);
+        if (previous > 0 && this.extractionCountdown === 0) {
+          this.extractionCountdown = null;
+          this.extractionReady = false;
+          this.queueRunSummary();
+        }
       }
     }
   }
@@ -411,6 +894,95 @@ class GameWorld {
     }
     const tile = randomWalkableTile(this.walkableTiles);
     return tileToWorld(tile.x + 0.5, tile.y + 0.5, this.level);
+  }
+
+  private queueRunSummary(): void {
+    if (this.pendingRunSummary) {
+      return;
+    }
+    this.pendingRunSummary = this.buildRunSummary();
+  }
+
+  private buildRunSummary(): RunSummary {
+    const playerStats: PlayerRunSummary[] = [];
+    for (const player of this.players.values()) {
+      playerStats.push({
+        id: player.id,
+        displayName: player.displayName,
+        psychicLevel: player.psychicLevel,
+        augments: player.augments.slice(),
+        artifacts: player.artifacts.slice(),
+        damageTaken: player.damageTaken,
+        xpCollected: player.xpCollected
+      });
+    }
+    return {
+      tick: this.tick,
+      wave: this.waveNumber,
+      totalKills: this.totalKills,
+      playerStats
+    };
+  }
+
+  consumeRunSummary(): RunSummary | null {
+    const summary = this.pendingRunSummary;
+    if (!summary) {
+      return null;
+    }
+    this.pendingRunSummary = null;
+    return summary;
+  }
+
+  resetForArmory(applyLoadout: (player: PlayerSimState) => void): void {
+    this.tick = 0;
+    this.spawnCursor = 0;
+    this.enemySpawnAccumulator = 0;
+    this.minibossSpawnTimer = 0;
+    this.nextMinibossInterval = 55 + Math.random() * 35;
+    this.waveNumber = 1;
+    this.killsThisWave = 0;
+    this.killsPerWave = 24;
+    this.totalKills = 0;
+    this.extractionReady = false;
+    this.extractionCountdown = null;
+    this.extractionPosition = null;
+    this.pendingRunSummary = null;
+    this.projectiles.clear();
+    this.enemies.clear();
+    this.xpDrops.clear();
+    this.artifactDrops.clear();
+    this.events.length = 0;
+    for (const player of this.players.values()) {
+      const spawn = this.pickSpawnPoint();
+      player.position = { x: spawn.x, y: spawn.y };
+      player.velocity = { x: 0, y: 0 };
+      player.input = createInitialInputState();
+      player.facing = 0;
+      player.aimHeading = 0;
+      player.psychicLevel = 1;
+      player.experience = 0;
+      player.experienceToNext = 100;
+      player.health = 120;
+      player.maxHealth = 120;
+      player.hurtTimer = 0;
+      player.invulnerableTimer = 0;
+      player.damageMultiplier = 1;
+      player.cooldownMultiplier = 1;
+      player.projectileSpeedMultiplier = 1;
+      player.splitShots = 0;
+      player.healthGrowthMultiplier = 1;
+      player.pendingAugments = [];
+      player.augments = [];
+      player.lastAugmentId = null;
+      player.ready = false;
+      player.artifacts = [];
+      player.artifactShieldTimer = 0;
+      player.artifactShieldValue = 0;
+      player.damageTaken = 0;
+      player.xpCollected = 0;
+      applyLoadout(player);
+    }
+    this.spawnInitialEnemies();
   }
 
   drainEvents(): WorldEvent[] {
@@ -444,7 +1016,7 @@ class GameWorld {
   private updateEnemies(deltaSeconds: number): void {
     this.enemySpawnAccumulator += deltaSeconds;
     const playerCount = Math.max(1, this.players.size);
-    const targetEnemies = Math.min(40, playerCount * 6);
+    const targetEnemies = Math.min(40, Math.round(playerCount * 6 * this.mutatorEnemySpawnMultiplier));
     if (this.enemySpawnAccumulator >= 6 && this.enemies.size < targetEnemies) {
       this.enemySpawnAccumulator = 0;
       const rollSeed = Math.random();
@@ -588,7 +1160,10 @@ class GameWorld {
         }
       }
 
-      const speed = getEnemySpeed(enemy.kind);
+      let speed = getEnemySpeed(enemy.kind);
+      if (enemy.kind === 'hawk') {
+        speed *= this.mutatorHawkSpeedMultiplier;
+      }
       let speedScale = 1;
       if (enemy.intent === 'windup' || enemy.intent === 'channel') {
         speedScale = 0;
@@ -1201,7 +1776,7 @@ class GameWorld {
     this.noteArtifactPickup(kind);
   }
 
-  private recalcLootMagnet(player: PlayerSimState): void {
+  recalcLootMagnet(player: PlayerSimState): void {
     const passiveRadius = LOOT_MAGNET_BASE_RADIUS * 0.6;
     if (player.lootMagnetLevel <= 0) {
       player.lootMagnetRadius = passiveRadius;
@@ -1436,7 +2011,16 @@ class GameWorld {
   }
 }
 
-const world = new GameWorld();
+let world = new GameWorld();
+const armory = new ArmoryManager();
+let sessionPhase: GamePhase = 'combat';
+let runNumber = 1;
+let pausedForArmory = false;
+let latestSnapshot: WorldSnapshot | null = null;
+let lastFullSnapshotTick = 0;
+const FULL_SNAPSHOT_INTERVAL = 12;
+let armoryTransitionTimer: NodeJS.Timeout | null = null;
+const SUMMARY_HOLD_MS = 2200;
 
 interface ClientContext {
   id: string;
@@ -1471,7 +2055,15 @@ httpServer.listen(PORT, () => {
 });
 
 setInterval(() => {
-  world.update();
+  if (!pausedForArmory) {
+    world.update();
+  }
+
+  const summary = world.consumeRunSummary();
+  if (summary) {
+    handleRunSummary(summary);
+  }
+
   const events = world.drainEvents();
   for (const event of events) {
     if (event.type === 'broadcast') {
@@ -1480,11 +2072,36 @@ setInterval(() => {
       sendToPlayerId(event.targetId, event.message);
     }
   }
-  const snapshotMessage: ServerMessage = {
-    type: 'snapshot',
-    snapshot: world.snapshot()
-  };
-  broadcast(snapshotMessage);
+
+  const currentMutators = armory.getMutators();
+  world.setMutators(currentMutators);
+  const snapshot = world.snapshot(currentMutators);
+  const previousSnapshot = latestSnapshot;
+  const shouldSendFull =
+    !previousSnapshot ||
+    snapshot.tick - lastFullSnapshotTick >= FULL_SNAPSHOT_INTERVAL ||
+    sessionPhase !== 'combat';
+
+  if (shouldSendFull) {
+    latestSnapshot = snapshot;
+    lastFullSnapshotTick = snapshot.tick;
+    broadcast({ type: 'snapshot', snapshot });
+  } else {
+    const delta = computeSnapshotDelta(previousSnapshot, snapshot);
+    latestSnapshot = snapshot;
+    if (delta) {
+      const deltaMessage: ServerMessage = {
+        type: 'snapshot-delta',
+        baseTick: previousSnapshot.tick,
+        delta
+      };
+      broadcast(deltaMessage);
+    }
+  }
+
+  if (armory.refreshMutators()) {
+    broadcastArmoryState();
+  }
 }, TICK_INTERVAL_MS);
 
 function handleClientMessage(context: ClientContext, raw: RawData): void {
@@ -1511,9 +2128,14 @@ function handleClientMessage(context: ClientContext, raw: RawData): void {
 
       const displayName = cleanDisplayName(message.displayName);
       context.displayName = displayName;
+      const meta = armory.ensurePlayer(context.id, displayName);
+      meta.ready = sessionPhase === 'combat' ? meta.ready : false;
       const player = world.addPlayer(context.id, displayName);
+      armory.applyLoadout(player, world);
+      player.ready = sessionPhase === 'combat' ? player.ready : false;
       context.hasJoined = true;
       console.log(`player joined: ${displayName} (${context.id})`);
+      const armoryState = armory.buildState(sessionPhase, runNumber);
       send(context.socket, {
         type: 'welcome',
         playerId: player.id,
@@ -1521,8 +2143,10 @@ function handleClientMessage(context: ClientContext, raw: RawData): void {
         level: world.level,
         players: getPlayerSummaries(),
         roster: getRosterEntries(),
-        objectives: world.getObjectiveState()
+        objectives: world.getObjectiveState(),
+        armory: armoryState
       });
+      broadcastArmoryState(armoryState);
       break;
     }
 
@@ -1558,7 +2182,12 @@ function handleClientMessage(context: ClientContext, raw: RawData): void {
       if (!context.hasJoined) {
         return;
       }
-      world.setPlayerReady(context.id, message.ready);
+      if (message.context === 'armory') {
+        armory.setReady(context.id, message.ready);
+        broadcastArmoryState(armory.buildState(sessionPhase, runNumber));
+      } else {
+        world.setPlayerReady(context.id, message.ready);
+      }
       break;
     }
 
@@ -1567,6 +2196,40 @@ function handleClientMessage(context: ClientContext, raw: RawData): void {
         return;
       }
       world.quickPing(context.id, message.kind, message.position);
+      break;
+    }
+
+    case 'armory-purchase': {
+      if (!context.hasJoined) {
+        return;
+      }
+      const result = armory.purchase(context.id, message.itemId);
+      if (!result.success) {
+        console.warn(`armory purchase failed for ${context.id}: ${result.error}`);
+      }
+      broadcastArmoryState(armory.buildState(sessionPhase, runNumber));
+      break;
+    }
+
+    case 'armory-equip': {
+      if (!context.hasJoined) {
+        return;
+      }
+      const result = armory.equip(context.id, message.itemId, message.slot);
+      if (!result.success) {
+        console.warn(`armory equip failed for ${context.id}: ${result.error}`);
+      }
+      broadcastArmoryState(armory.buildState(sessionPhase, runNumber));
+      break;
+    }
+
+    case 'launch-run': {
+      if (!context.hasJoined) {
+        return;
+      }
+      if (sessionPhase === 'armory' && armory.allReady()) {
+        startNextRun();
+      }
       break;
     }
 
@@ -1579,7 +2242,9 @@ function handleClientMessage(context: ClientContext, raw: RawData): void {
 function handleDisconnect(context: ClientContext): void {
   if (clients.delete(context.socket) && context.hasJoined) {
     world.removePlayer(context.id);
+    armory.removePlayer(context.id);
     console.log(`player left: ${context.displayName ?? context.id}`);
+    broadcastArmoryState(armory.buildState(sessionPhase, runNumber));
   }
 }
 
@@ -1780,6 +2445,116 @@ function computeVelocity(input: PlayerInputState): { x: number; y: number } {
     x: (x / length) * speed,
     y: (y / length) * speed
   };
+}
+
+function handleRunSummary(summary: RunSummary): void {
+  armory.grantRunRewards(summary);
+  sessionPhase = 'summary';
+  pausedForArmory = true;
+  if (armoryTransitionTimer) {
+    clearTimeout(armoryTransitionTimer);
+  }
+  latestSnapshot = null;
+  const state = armory.buildState(sessionPhase, runNumber);
+  broadcastArmoryState(state);
+  armoryTransitionTimer = setTimeout(() => {
+    armoryTransitionTimer = null;
+    enterArmoryStage();
+  }, SUMMARY_HOLD_MS);
+}
+
+function enterArmoryStage(): void {
+  sessionPhase = 'armory';
+  pausedForArmory = true;
+  runNumber += 1;
+  armory.resetReady();
+  world.resetForArmory((player) => armory.applyLoadout(player, world));
+  latestSnapshot = null;
+  broadcastArmoryState();
+}
+
+function startNextRun(): void {
+  if (armoryTransitionTimer) {
+    clearTimeout(armoryTransitionTimer);
+    armoryTransitionTimer = null;
+  }
+  sessionPhase = 'combat';
+  pausedForArmory = false;
+  armory.resetReady();
+  for (const player of world.players.values()) {
+    player.ready = false;
+    armory.applyLoadout(player, world);
+  }
+  latestSnapshot = null;
+  broadcastArmoryState(armory.buildState(sessionPhase, runNumber));
+}
+
+function broadcastArmoryState(state: ArmoryState = armory.buildState(sessionPhase, runNumber)): void {
+  broadcast({ type: 'armory-state', state });
+}
+
+function computeSnapshotDelta(previous: WorldSnapshot, next: WorldSnapshot): WorldSnapshotDelta | null {
+  const players = computeEntityDelta(previous.players, next.players);
+  const enemies = computeEntityDelta(previous.enemies, next.enemies);
+  const projectiles = computeEntityDelta(previous.projectiles, next.projectiles);
+  const xpDrops = computeEntityDelta(previous.xpDrops, next.xpDrops);
+  const artifacts = computeEntityDelta(previous.artifacts, next.artifacts);
+  const objectivesChanged = !entitiesEqual(previous.objectives, next.objectives);
+  const mutatorsChanged = !entitiesEqual(previous.mutators, next.mutators);
+
+  if (
+    !players &&
+    !enemies &&
+    !projectiles &&
+    !xpDrops &&
+    !artifacts &&
+    !objectivesChanged &&
+    !mutatorsChanged
+  ) {
+    return null;
+  }
+
+  const delta: WorldSnapshotDelta = {
+    tick: next.tick
+  };
+  if (players) delta.players = players;
+  if (enemies) delta.enemies = enemies;
+  if (projectiles) delta.projectiles = projectiles;
+  if (xpDrops) delta.xpDrops = xpDrops;
+  if (artifacts) delta.artifacts = artifacts;
+  if (objectivesChanged) delta.objectives = next.objectives;
+  if (mutatorsChanged) delta.mutators = next.mutators;
+  return delta;
+}
+
+function computeEntityDelta<T extends { id: string }>(previous: T[], next: T[]): EntityDelta<T> | undefined {
+  const upsert: T[] = [];
+  const remove: string[] = [];
+  const previousById = new Map<string, T>();
+  for (const entity of previous) {
+    previousById.set(entity.id, entity);
+  }
+  const nextIds = new Set<string>();
+  for (const entity of next) {
+    nextIds.add(entity.id);
+    const prev = previousById.get(entity.id);
+    if (!prev || !entitiesEqual(prev, entity)) {
+      upsert.push(entity);
+    }
+  }
+  for (const entity of previous) {
+    if (!nextIds.has(entity.id)) {
+      remove.push(entity.id);
+    }
+  }
+  if (upsert.length === 0 && remove.length === 0) {
+    return undefined;
+  }
+  return { upsert, remove };
+}
+
+function entitiesEqual(a: unknown, b: unknown): boolean {
+  return JSON.stringify(a) === JSON.stringify(b);
 }
 
 function assertNever(value: never): never {

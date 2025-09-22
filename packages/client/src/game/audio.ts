@@ -1,7 +1,11 @@
+import type { GamePhase } from '@farsight/shared';
+
 export interface AudioController {
   prime(): void;
   playLevelUp(): void;
   playBossSpawn(): void;
+  setIntensity(level: number): void;
+  setPhase(phase: GamePhase): void;
   dispose(): void;
 }
 
@@ -10,8 +14,19 @@ export function createAudioController(): AudioController {
     webkitAudioContext?: typeof AudioContext;
   }).webkitAudioContext);
   let context: AudioContext | null = null;
+  let masterGain: GainNode | null = null;
+  let baseGain: GainNode | null = null;
+  let intensityGain: GainNode | null = null;
   let musicTimer: number | null = null;
   let unlocked = false;
+  let targetIntensity = 0;
+  let currentPhase: GamePhase = 'combat';
+
+  const phaseLevels: Record<GamePhase, number> = {
+    combat: 0.55,
+    armory: 0.28,
+    summary: 0.4
+  };
 
   const ensureContext = async (): Promise<AudioContext | null> => {
     if (!AudioCtor) {
@@ -32,10 +47,26 @@ export function createAudioController(): AudioController {
         return null;
       }
     }
+    if (!masterGain) {
+      masterGain = context.createGain();
+      masterGain.gain.value = 0.75;
+      masterGain.connect(context.destination);
+
+      baseGain = context.createGain();
+      baseGain.gain.value = phaseLevels[currentPhase];
+      baseGain.connect(masterGain);
+
+      intensityGain = context.createGain();
+      intensityGain.gain.value = targetIntensity * 0.45;
+      intensityGain.connect(masterGain);
+    }
     return context;
   };
 
   const scheduleMusicBar = (ctx: AudioContext) => {
+    if (!baseGain || !intensityGain) {
+      return;
+    }
     const tempo = 92;
     const beat = 60 / tempo;
     const startTime = ctx.currentTime + 0.1;
@@ -55,10 +86,20 @@ export function createAudioController(): AudioController {
         gain.gain.setValueAtTime(0.035, stepStart);
         gain.gain.linearRampToValueAtTime(0.01, stepStart + beat * 0.4);
         gain.gain.exponentialRampToValueAtTime(0.0001, stepStart + beat * 0.9);
-        osc.connect(gain).connect(ctx.destination);
+        osc.connect(gain).connect(baseGain);
         osc.start(stepStart);
         osc.stop(stepStart + beat);
       }
+
+      const pulseOsc = ctx.createOscillator();
+      const pulseGain = ctx.createGain();
+      pulseOsc.type = 'triangle';
+      pulseOsc.frequency.setValueAtTime(chord[step][0] / 2, stepStart + beat * 0.25);
+      pulseGain.gain.setValueAtTime(0.02, stepStart + beat * 0.25);
+      pulseGain.gain.exponentialRampToValueAtTime(0.0001, stepStart + beat);
+      pulseOsc.connect(pulseGain).connect(intensityGain);
+      pulseOsc.start(stepStart + beat * 0.25);
+      pulseOsc.stop(stepStart + beat * 0.85);
     }
   };
 
@@ -75,6 +116,24 @@ export function createAudioController(): AudioController {
     }, 4000);
   };
 
+  const refreshBaseGain = (ctx: AudioContext) => {
+    if (!baseGain) {
+      return;
+    }
+    const target = phaseLevels[currentPhase];
+    baseGain.gain.cancelScheduledValues(ctx.currentTime);
+    baseGain.gain.linearRampToValueAtTime(target, ctx.currentTime + 0.6);
+  };
+
+  const refreshIntensityGain = (ctx: AudioContext) => {
+    if (!intensityGain) {
+      return;
+    }
+    const level = currentPhase === 'combat' ? targetIntensity : 0;
+    intensityGain.gain.cancelScheduledValues(ctx.currentTime);
+    intensityGain.gain.linearRampToValueAtTime(level * 0.45, ctx.currentTime + 0.4);
+  };
+
   const playTone = (frequency: number, duration: number, type: OscillatorType, volume = 0.14): void => {
     void ensureContext().then((ctx) => {
       if (!ctx) {
@@ -87,7 +146,7 @@ export function createAudioController(): AudioController {
       osc.frequency.setValueAtTime(frequency, now);
       gain.gain.setValueAtTime(volume, now);
       gain.gain.exponentialRampToValueAtTime(0.0001, now + duration);
-      osc.connect(gain).connect(ctx.destination);
+      osc.connect(gain).connect(masterGain ?? ctx.destination);
       osc.start(now);
       osc.stop(now + duration + 0.05);
     });
@@ -106,7 +165,7 @@ export function createAudioController(): AudioController {
       osc.frequency.linearRampToValueAtTime(end, now + duration);
       gain.gain.setValueAtTime(volume, now);
       gain.gain.exponentialRampToValueAtTime(0.0001, now + duration * 0.9);
-      osc.connect(gain).connect(ctx.destination);
+      osc.connect(gain).connect(masterGain ?? ctx.destination);
       osc.start(now);
       osc.stop(now + duration + 0.1);
     });
@@ -123,6 +182,8 @@ export function createAudioController(): AudioController {
           return;
         }
         startMusic(ctx);
+        refreshBaseGain(ctx);
+        refreshIntensityGain(ctx);
       });
     },
     playLevelUp(): void {
@@ -133,6 +194,25 @@ export function createAudioController(): AudioController {
       playTone(140, 0.5, 'sawtooth', 0.2);
       window.setTimeout(() => playSweep(220, 110, 0.45, 0.12), 80);
     },
+    setIntensity(level: number): void {
+      targetIntensity = Math.max(0, Math.min(level, 1));
+      void ensureContext().then((ctx) => {
+        if (!ctx) {
+          return;
+        }
+        refreshIntensityGain(ctx);
+      });
+    },
+    setPhase(phase: GamePhase): void {
+      currentPhase = phase;
+      void ensureContext().then((ctx) => {
+        if (!ctx) {
+          return;
+        }
+        refreshBaseGain(ctx);
+        refreshIntensityGain(ctx);
+      });
+    },
     dispose(): void {
       if (musicTimer !== null) {
         window.clearInterval(musicTimer);
@@ -142,6 +222,12 @@ export function createAudioController(): AudioController {
         context.close().catch(() => {});
         context = null;
       }
+      masterGain = null;
+      baseGain = null;
+      intensityGain = null;
+      unlocked = false;
+      targetIntensity = 0;
+      currentPhase = 'combat';
     }
   };
 }
