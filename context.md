@@ -13,12 +13,11 @@
 - Dynamic HUD frameworks: roster/ready panel, objective tracker, ping wheel, and augment toasts all driven from shared snapshot data.
 
 **Recent Feature Pass (committed)**
-- Gameplay: Hawk dive, burrowing weasel, and support owl enemies landed; bosses now burst psychic artifacts that grant permanent stat boosts. Foraging Aura augments expand a stackable loot magnet and the server logs damage/xp/augment/artifact telemetry for tuning.
-- Progression: Level-up picker supports stackable augments with HUD build summaries surfacing augments, artifacts, and magnet radius per player.
-- Feedback: Audio controller still drives loops/SFX; psychic pulses, artifact toasts, and boss banners reinforce major events. Aim-heading is decoupled from movement to keep projectiles aligned with the reticle.
-- Rendering: Player/enemy meshes animate via lightweight rigs, parallax skyboxes and biome props (windmill, grass sway) dress the arena, and disk-based psychic VFX punctuate artifact pickups.
-- Tooling: `npm run telemetry:summary` digests the server’s `[telemetry]` log output; runtime texture atlases cut draw calls; particles frustum-cull to relieve overdraw.
-- Co-op quality of life: Ready check, roster augment surfacing, ping wheel, and objective tracker remain core; HUD now indicates active builds and artifact gains.
+- Meta progression: Armory hub runs between sorties; feathers persist, upgrades/cosmetics apply server-side, and readiness is phase-aware (`context: 'armory' | 'extraction'`). Daily/weekly mutators rotate deterministically (glass cannon, overgrowth, aerial superiority, psionic storm, etc.).
+- Gameplay: Loadout upgrades influence damage/cooldowns/splits/magnet radius from the armory, while mutators tweak spawn cadence and hawk speed. Extraction unlocks at wave ≥3 and requires a ready check before countdown.
+- Feedback: HUD now surfaces mutators, armory rosters, inventory cards, and a unified ready button. Cinematic camera zooms highlight level-ups and boss drops; soundtrack layers mix phase ambience with combat intensity.
+- Rendering & perf: Client reconstructs world snapshots from deltas and culls off-screen enemies/projectiles. Snapshot compression cuts network usage, and cosmetics hook remains TODO for visual feedback.
+- Tooling: `npm run matchmaking:test` exercises reconnect + ready flow, `npm run replay:inputs` replays recorded input traces, and bundle budgets fail the build if Vite chunks exceed limits.
 
 **Baseline Polish (completed)**
 - Visual: Procedural chicken/enemy textures, additive projectile trails, pooled impact bursts, and harm flicker tuning.
@@ -39,9 +38,9 @@
 **Open Threads / Next Steps**
 1. HUD sandbox + spawn gizmo: storybook-style UI route and in-editor placement tooling remain to be scheduled.
 2. Telemetry dashboards: stream aggregated outputs into Grafana/observable for playtest nights once `telemetry:summary` is battle-tested.
-3. Performance: establish `perf:fps` baselines on Chrome (M1 Air + mid-tier Windows) and explore snapshot compression.
-4. Networking/QA: reconnect path, snapshot replay integration into CI, broaden hardware/browser coverage.
-5. Meta planning: prepare Milestone 4 art/tooling specs (armory hub, mutators, bundle budgets).
+3. Performance: downstream work to surface cosmetics client-side and profile mutator-heavy runs; verify bundle budgets can expand with future assets.
+4. Networking/QA: fold `matchmaking:test` + `replay:inputs` into CI once snapshots are stabilized; expose cosmetic selections in snapshots for UI validation.
+5. Meta planning: Milestone 5 polish—bring cosmetic visuals online, surface armory loadout summaries, and wire telemetry dashboards to the new currency loop.
 
 **Key Files (post-commit)**
 - Shared schema: `packages/shared/src/index.ts`

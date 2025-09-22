@@ -31,11 +31,11 @@ This plan keeps the game fun at every stage while steering toward a rich, perfor
 - **Performance**: Runtime atlas packing merges biome tile textures, ambient particles cull out-of-view, and `npm run perf:fps` is the baseline for mid-hardware validation on Chrome (M1 Air + mid-tier Windows).
 - **Tooling**: Added `npm run telemetry:summary` to condense `[telemetry]` console output, keeping damage/XP/augment/ artifact trends visible without diving into raw logs. Storybook sandbox and editor gizmo remain future stretch.
 
-## Milestone 4 – Meta Progression & Replayability (Week 12–15)
-- **Gameplay & Balance**: Launch armory hub between runs with currency (feathers) for loadout upgrades and cosmetic unlocks; introduce daily/weekly mutators to keep demos fresh.
-- **Visual & Audio**: Expand 3D asset library with cosmetic variants and add cinematic zooms for level-up and boss introductions. Compose layered soundtrack with intensity scaling.
-- **Performance**: Add snapshot delta compression and lightweight client-side culling for off-screen enemies. Validate network bandwidth targets over Tailscale.
-- **Tooling**: Build matchmaking test harness supporting reconnect, add automated regression script that replays recorded input streams, and set up bundle size budgets with alerts.
+## Milestone 4 – Meta Progression & Replayability (Week 12–15) ✅
+- **Gameplay & Balance**: Armory hub now gates sorties between runs; feathers buy loadout upgrades & cosmetics, and daily/weekly mutators rotate automatically (glass cannon, overgrowth, etc.). Ready toggles are phase-aware so squads must confirm both extraction and sortie launch.
+- **Visual & Audio**: HUD surfaces mutators, armory roster, inventory cards, and a unified ready button. Cinematic camera zooms punctuate level-ups and boss spawns, and the layered soundtrack blends phase ambience with combat intensity.
+- **Performance**: Snapshot delta compression keeps websocket payloads light, enemies/projectiles cull client-side when out of view, and hawk overgrowth mutators scale server spawn logic.
+- **Tooling**: Added `npm run matchmaking:test` harness for reconnect smoke, `npm run replay:inputs` for deterministic input playback, and Vite bundle budgets to flag oversized chunks.
 
 ## Milestone 5 – Launch-Ready Polish (Week 16–20)
 - **Gameplay & Balance**: Finalize difficulty curve with analytics-driven tweaks, add tutorial onboarding, and implement fail-states (extraction success/failure summary).

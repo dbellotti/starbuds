@@ -18,6 +18,8 @@
 - `npm run typecheck --workspaces`: runs TypeScript in no-emit mode across all packages; use before commits.
 - `npm run replay:snapshots -- <file.json>`: summarises recorded `WorldSnapshot` logs to inspect tick cadence, counts, and boss waves.
 - `npm run telemetry:summary -- <logfile>`: parses server `[telemetry]` console output into aggregate damage/xp/augment/artifact totals for quick balance reads.
+- `npm run matchmaking:test`: spins up a handful of simulated clients, toggles ready state in the armory, and exercises reconnect flows.
+- `npm run replay:inputs -- <file.json>`: plays back recorded input streams frame-by-frame against a live server, useful for regression hunting.
 - `npm run smoke`: spins up the authoritative server and verifies a headless websocket client can join + receive snapshots.
 - `npm run perf:fps`: builds the client, runs `vite preview`, and captures a short FPS sample via Puppeteer (Chrome headless).
 - `npm run lint` / `npm run lint:fix`: ESLint + Prettier across all workspaces.
@@ -30,12 +32,12 @@
 - Name files and symbols descriptively: `camelCase` for functions/vars, `PascalCase` for types/classes, `kebab-case` for files.
 - Three.js materials and simulation constants live in `shared`; avoid duplicating magic numbers on client/server.
 - Procedural textures are authored in code; cache reusable `CanvasTexture` instances rather than re-creating per frame. Biome tiles pack into a runtime atlas via `createBiomeMaterials`; reuse the helper when adding new atlas tiles.
-- Audio must be gated behind a user gesture (see `createAudioController`) to satisfy browser autoplay policies.
+- Audio must be gated behind a user gesture (see `createAudioController`) to satisfy browser autoplay policies. Combat intensity now ramps through `audio.setIntensity`, and phase changes call `audio.setPhase`.
 - ESLint (`.eslintrc.cjs`) + Prettier (`.prettierrc.json`) guard formatting. Run `npm run lint:fix` before long diff reviews.
 
 ## Testing Guidelines
 - Current safety net is TypeScript typechecking; integration playtests rely on running both dev servers simultaneously.
-- If adding automated tests, collocate under `packages/<name>/tests/` and wire them into an npm script so `npm run test --workspaces` can evolve.
+- If adding automated tests, collocate under `packages/<name>/tests/` and wire them into an npm script so `npm run test --workspaces` can evolve. For deterministic repros, capture input traces and replay via `npm run replay:inputs`.
 - Use deterministic seeds (`LEVEL_SEED=123`) when reproducing bugs.
 - Leverage the in-game debug overlay (FPS, ping, tick drift) to verify performance budgets during playtests.
 - For quick confidence, `npm run smoke` hits the authoritative server with a headless bot, and `npm run perf:fps` reports short FPS samples after a cold start.
@@ -47,6 +49,6 @@
 - Link Tailscale or deployment notes if networking adjustments are involved.
 
 ## Security & Configuration Tips
-- Treat server port (default `7777`) as configurable via `.env` (`VITE_SERVER_PORT`) or process vars; never hard-code secrets.
+- Treat server port (default `7777`) as configurable via `.env` (`VITE_SERVER_PORT`) or process vars; never hard-code secrets. Armory/ready signaling is phase-aware (`context: 'armory' | 'extraction'`); daily/weekly mutators rotate server-side without redeploys.
 - The client auto-derives the websocket host from the current page. Override `VITE_SERVER_ORIGIN` only when tunnelling through a proxy domain.
 - Test remote clients through Tailscale tunnels before claiming multiplayer readiness.
