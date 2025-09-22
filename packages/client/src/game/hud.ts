@@ -1,4 +1,5 @@
 import type {
+  ArtifactKind,
   AugmentId,
   AugmentOption,
   EnemyKind,
@@ -6,7 +7,14 @@ import type {
   QuickPingKind,
   WorldSnapshot
 } from '@farsight/shared';
-import { PLAYER_HURT_FLASH_TIME, getAugmentOption } from '@farsight/shared';
+import {
+  ARTIFACT_DEFINITIONS,
+  LOOT_MAGNET_BASE_RADIUS,
+  LOOT_MAGNET_MAX_RADIUS,
+  LOOT_MAGNET_RADIUS_STEP,
+  PLAYER_HURT_FLASH_TIME,
+  getAugmentOption
+} from '@farsight/shared';
 
 interface LevelUpUiOffer {
   offerId: string;
@@ -70,6 +78,19 @@ export function createHud(parent: HTMLElement, options: HudOptions = {}): Hud {
   augmentLabel.textContent = 'Augment: —';
   panel.appendChild(augmentLabel);
 
+  const buildPanel = document.createElement('div');
+  buildPanel.className = 'hud-build';
+  const augmentSummary = document.createElement('div');
+  augmentSummary.className = 'hud-build-augments';
+  buildPanel.appendChild(augmentSummary);
+  const artifactSummary = document.createElement('div');
+  artifactSummary.className = 'hud-build-artifacts';
+  buildPanel.appendChild(artifactSummary);
+  const magnetSummary = document.createElement('div');
+  magnetSummary.className = 'hud-build-magnet';
+  buildPanel.appendChild(magnetSummary);
+  panel.appendChild(buildPanel);
+
   const tipLabel = document.createElement('div');
   tipLabel.className = 'hud-tip';
   tipLabel.textContent = 'LMB: Psychic Bolt · WASD: Move · V: Toggle View · Q: Ping Wheel';
@@ -95,6 +116,11 @@ export function createHud(parent: HTMLElement, options: HudOptions = {}): Hud {
   const toast = document.createElement('div');
   toast.className = 'hud-toast';
   root.appendChild(toast);
+
+  const bossBanner = document.createElement('div');
+  bossBanner.className = 'hud-boss-banner';
+  bossBanner.textContent = '';
+  root.appendChild(bossBanner);
 
   const teamPanel = document.createElement('div');
   teamPanel.className = 'hud-team';
@@ -185,6 +211,26 @@ export function createHud(parent: HTMLElement, options: HudOptions = {}): Hud {
   let pingSelection: QuickPingKind | null = null;
   const rosterDom = new Map<string, RosterRow>();
   const pingTimeouts: number[] = [];
+  const playerArtifactCounts = new Map<string, Map<ArtifactKind, number>>();
+  let bossBannerTimer: number | null = null;
+
+  const hideBossBanner = () => {
+    if (bossBannerTimer !== null) {
+      window.clearTimeout(bossBannerTimer);
+      bossBannerTimer = null;
+    }
+    bossBanner.classList.remove('is-visible');
+    bossBanner.textContent = '';
+  };
+
+  const presentBossBanner = (headline: string, detail: string) => {
+    hideBossBanner();
+    bossBanner.innerHTML = `<span class="hud-boss-headline">${headline}</span><span class="hud-boss-detail">${detail}</span>`;
+    bossBanner.classList.add('is-visible');
+    bossBannerTimer = window.setTimeout(() => {
+      hideBossBanner();
+    }, 3800);
+  };
 
   const applyReadyState = () => {
     readyButton.classList.toggle('is-ready', readyState);
@@ -203,6 +249,54 @@ export function createHud(parent: HTMLElement, options: HudOptions = {}): Hud {
 
   readyButton.addEventListener('click', handleReadyClick);
 
+  function tallyList<T extends string>(values: T[]): Map<T, number> {
+    const counts = new Map<T, number>();
+    for (const value of values) {
+      counts.set(value, (counts.get(value) ?? 0) + 1);
+    }
+    return counts;
+  }
+
+  function formatAugmentSummary(augments: AugmentId[]): string {
+    if (augments.length === 0) {
+      return 'Augments: —';
+    }
+    const counts = tallyList(augments);
+    const parts = Array.from(counts.entries()).map(([id, count]) => {
+      const name = getAugmentOption(id).name;
+      return count > 1 ? `${name} ×${count}` : name;
+    });
+    return `Augments: ${parts.join(', ')}`;
+  }
+
+  function formatArtifactSummary(artifacts: ArtifactKind[]): string {
+    if (artifacts.length === 0) {
+      return 'Artifacts: —';
+    }
+    const counts = tallyList(artifacts);
+    const parts = Array.from(counts.entries()).map(([kind, count]) => {
+      const name = ARTIFACT_DEFINITIONS[kind]?.name ?? kind;
+      return count > 1 ? `${name} ×${count}` : name;
+    });
+    return `Artifacts: ${parts.join(', ')}`;
+  }
+
+  function calculateMagnetRadius(level: number): number {
+    if (level <= 0) {
+      return Math.round(LOOT_MAGNET_BASE_RADIUS * 0.6);
+    }
+    const base = LOOT_MAGNET_BASE_RADIUS;
+    const bonus = LOOT_MAGNET_RADIUS_STEP * Math.max(0, level - 1);
+    return Math.round(Math.min(LOOT_MAGNET_MAX_RADIUS, base + bonus));
+  }
+
+  function formatMagnetSummary(level: number): string {
+    if (level <= 0) {
+      return `Loot Magnet: Passive (${calculateMagnetRadius(level)}u)`;
+    }
+    return `Loot Magnet: Lv ${level} (${calculateMagnetRadius(level)}u)`;
+  }
+
   function clearRoster(): void {
     for (const row of rosterDom.values()) {
       row.element.remove();
@@ -218,11 +312,16 @@ export function createHud(parent: HTMLElement, options: HudOptions = {}): Hud {
       panel.classList.remove('is-hurt', 'is-invulnerable');
       lastHurtTimer = 0;
       augmentLabel.textContent = 'Augment: —';
+      augmentSummary.textContent = 'Augments: —';
+      artifactSummary.textContent = 'Artifacts: —';
+      magnetSummary.textContent = 'Loot Magnet: —';
+      hideBossBanner();
       readyState = false;
       applyReadyState();
       readyButton.disabled = true;
       clearLevelUp();
       clearRoster();
+      playerArtifactCounts.clear();
       waveLabel.textContent = 'Wave —';
       updateBar(waveProgress, 0, 1, '0%');
       bossLabel.textContent = 'Boss: —';
@@ -239,6 +338,10 @@ export function createHud(parent: HTMLElement, options: HudOptions = {}): Hud {
       panel.classList.remove('is-hurt', 'is-invulnerable');
       lastHurtTimer = 0;
       augmentLabel.textContent = 'Augment: —';
+      augmentSummary.textContent = 'Augments: —';
+      artifactSummary.textContent = 'Artifacts: —';
+      magnetSummary.textContent = 'Loot Magnet: —';
+      hideBossBanner();
       readyState = false;
       applyReadyState();
       readyButton.disabled = true;
@@ -250,6 +353,28 @@ export function createHud(parent: HTMLElement, options: HudOptions = {}): Hud {
       extractionLabel.textContent = 'Extraction: —';
       killLabel.textContent = '';
       return;
+    }
+
+    const seenPlayers = new Set<string>();
+    for (const entry of snapshot.players) {
+      const previous = playerArtifactCounts.get(entry.id);
+      const counts = tallyList(entry.artifacts);
+      const isInitial = !previous;
+      if (previous) {
+        for (const [kind, count] of counts) {
+          const before = previous.get(kind) ?? 0;
+          if (count > before) {
+            showArtifactToast(kind, entry.id === playerId);
+          }
+        }
+      }
+      playerArtifactCounts.set(entry.id, counts);
+      seenPlayers.add(entry.id);
+    }
+    for (const id of Array.from(playerArtifactCounts.keys())) {
+      if (!seenPlayers.has(id)) {
+        playerArtifactCounts.delete(id);
+      }
     }
 
     root.style.opacity = '1';
@@ -270,6 +395,10 @@ export function createHud(parent: HTMLElement, options: HudOptions = {}): Hud {
     } else {
       augmentLabel.textContent = 'Augment: —';
     }
+
+    augmentSummary.textContent = formatAugmentSummary(player.augments);
+    artifactSummary.textContent = formatArtifactSummary(player.artifacts);
+    magnetSummary.textContent = formatMagnetSummary(player.lootMagnetLevel);
 
     const hurtTimer = Math.max(0, player.hurtTimer ?? 0);
     const hurtRatio = PLAYER_HURT_FLASH_TIME > 0 ? Math.min(1, hurtTimer / PLAYER_HURT_FLASH_TIME) : 0;
@@ -424,9 +553,16 @@ export function createHud(parent: HTMLElement, options: HudOptions = {}): Hud {
     showToast(headline, `Level ${level}`, isLocal ? 'is-local' : 'is-ally');
   }
 
+  function showArtifactToast(kind: ArtifactKind, isLocal: boolean): void {
+    const artifact = ARTIFACT_DEFINITIONS[kind];
+    const headline = isLocal ? 'Artifact secured' : 'Ally secured artifact';
+    const tone = isLocal ? 'is-artifact-local' : 'is-artifact-ally';
+    showToast(headline, artifact?.name ?? kind, tone);
+  }
+
   function showBossSpawn(kind: EnemyKind): void {
     const pretty = kind.charAt(0).toUpperCase() + kind.slice(1);
-    showToast('Miniboss inbound!', pretty, 'is-boss');
+    presentBossBanner('Miniboss inbound', pretty);
   }
 
   function showPingAlert(message: QuickPingBroadcastMessage, isLocal: boolean): void {
@@ -571,6 +707,7 @@ export function createHud(parent: HTMLElement, options: HudOptions = {}): Hud {
     for (const timeout of pingTimeouts) {
       window.clearTimeout(timeout);
     }
+    hideBossBanner();
   }
 
   return {

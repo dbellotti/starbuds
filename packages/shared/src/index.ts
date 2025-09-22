@@ -4,12 +4,26 @@ export const NETWORK_PROTOCOL_VERSION = 3;
 export const TICK_RATE = 60;
 export const MAX_PLAYERS = 4;
 
-export type EnemyKind = 'fox' | 'hawk' | 'snake' | 'raccoon' | 'coyote';
-export type EnemyIntent = 'idle' | 'windup' | 'recover';
+export type EnemyKind =
+  | 'fox'
+  | 'hawk'
+  | 'snake'
+  | 'raccoon'
+  | 'coyote'
+  | 'weasel'
+  | 'owl';
+export type EnemyIntent = 'idle' | 'windup' | 'recover' | 'burrow' | 'channel';
 
 export type ProjectileFaction = 'player' | 'enemy' | 'boss';
-export type AugmentId = 'mind-surge' | 'rapid-channel' | 'psy-shield' | 'bolt-split';
+export type AugmentId =
+  | 'mind-surge'
+  | 'rapid-channel'
+  | 'psy-shield'
+  | 'bolt-split'
+  | 'foraging-aura';
 export type QuickPingKind = 'assist' | 'danger' | 'loot' | 'objective';
+
+export type ArtifactKind = 'damage-core' | 'haste-spur' | 'ward-feather';
 
 export interface AugmentDefinition {
   id: AugmentId;
@@ -37,10 +51,17 @@ export const AUGMENT_DEFINITIONS: Record<AugmentId, AugmentDefinition> = {
     id: 'bolt-split',
     name: 'Echo Bolt',
     description: 'Projectiles split once on hit'
+  },
+  'foraging-aura': {
+    id: 'foraging-aura',
+    name: 'Foraging Aura',
+    description: 'XP orbs drift toward you; effect stacks each level'
   }
 };
 
 export const AUGMENT_POOL: AugmentId[] = Object.keys(AUGMENT_DEFINITIONS) as AugmentId[];
+
+export const STACKABLE_AUGMENTS = new Set<AugmentId>(['foraging-aura']);
 
 export interface AugmentOption {
   id: AugmentId;
@@ -56,11 +77,50 @@ export function getAugmentOption(id: AugmentId): AugmentOption {
   return { id: augment.id, name: augment.name, description: augment.description };
 }
 
+export interface ArtifactDefinition {
+  id: ArtifactKind;
+  name: string;
+  description: string;
+}
+
+export const ARTIFACT_DEFINITIONS: Record<ArtifactKind, ArtifactDefinition> = {
+  'damage-core': {
+    id: 'damage-core',
+    name: 'Psionic Core',
+    description: '+15% bolt damage & aura brightness'
+  },
+  'haste-spur': {
+    id: 'haste-spur',
+    name: 'Temporal Spur',
+    description: '-12% ability cooldowns & faster projectiles'
+  },
+  'ward-feather': {
+    id: 'ward-feather',
+    name: 'Ward Feather',
+    description: '+12% max health and a burst shield'
+  }
+};
+
+export function getArtifactDefinition(id: ArtifactKind): ArtifactDefinition {
+  const artifact = ARTIFACT_DEFINITIONS[id];
+  if (!artifact) {
+    throw new Error(`Unknown artifact ${id}`);
+  }
+  return artifact;
+}
+
 export const BASE_PLAYER_DAMAGE = 25;
 export const PROJECTILE_SPEED = 420;
 export const PROJECTILE_LIFETIME = 1.2; // seconds
 export const PROJECTILE_RADIUS = 18;
 export const PROJECTILE_COOLDOWN = 0.35; // seconds
+
+export const LOOT_MAGNET_BASE_RADIUS = 140;
+export const LOOT_MAGNET_RADIUS_STEP = 55;
+export const LOOT_MAGNET_MAX_RADIUS = 320;
+export const LOOT_MAGNET_PULL_SPEED = 260;
+
+export const ARTIFACT_TTL = 28; // seconds before despawn
 
 export interface PlayerSummary {
   id: string;
@@ -89,7 +149,9 @@ export const ENEMY_XP_VALUES: Record<EnemyKind, number> = {
   hawk: 18,
   snake: 12,
   raccoon: 22,
-  coyote: 240
+  coyote: 240,
+  weasel: 28,
+  owl: 30
 };
 
 export const ENEMY_ATTACK_DAMAGE: Record<EnemyKind, number> = {
@@ -97,7 +159,9 @@ export const ENEMY_ATTACK_DAMAGE: Record<EnemyKind, number> = {
   hawk: 14,
   snake: 22,
   raccoon: 16,
-  coyote: 28
+  coyote: 28,
+  weasel: 20,
+  owl: 12
 };
 
 export const ENEMY_ATTACK_RANGE: Record<EnemyKind, number> = {
@@ -105,7 +169,9 @@ export const ENEMY_ATTACK_RANGE: Record<EnemyKind, number> = {
   hawk: 52,
   snake: 36,
   raccoon: 160,
-  coyote: 82
+  coyote: 82,
+  weasel: 56,
+  owl: 180
 };
 
 export const ENEMY_ATTACK_WINDUP: Record<EnemyKind, number> = {
@@ -113,7 +179,9 @@ export const ENEMY_ATTACK_WINDUP: Record<EnemyKind, number> = {
   hawk: 0.75,
   snake: 0.55,
   raccoon: 1.1,
-  coyote: 1.6
+  coyote: 1.6,
+  weasel: 0.45,
+  owl: 1.2
 };
 
 export const ENEMY_ATTACK_RECOVERY: Record<EnemyKind, number> = {
@@ -121,7 +189,9 @@ export const ENEMY_ATTACK_RECOVERY: Record<EnemyKind, number> = {
   hawk: 0.65,
   snake: 0.85,
   raccoon: 0.9,
-  coyote: 1.1
+  coyote: 1.1,
+  weasel: 0.8,
+  owl: 1.4
 };
 
 export const ENEMY_ATTACK_COOLDOWN: Record<EnemyKind, number> = {
@@ -129,7 +199,9 @@ export const ENEMY_ATTACK_COOLDOWN: Record<EnemyKind, number> = {
   hawk: 1.45,
   snake: 1.6,
   raccoon: 2.1,
-  coyote: 4.5
+  coyote: 4.5,
+  weasel: 1.9,
+  owl: 3.4
 };
 
 export const PLAYER_INVULNERABILITY_TIME = 0.75;
@@ -146,6 +218,7 @@ export type PlayerInputButton =
 
 export type PlayerInputState = Record<PlayerInputButton, boolean> & {
   aimDirection: number;
+  aimHeading: number;
 };
 
 export interface HelloMessage {
@@ -279,12 +352,20 @@ export interface XpDropState {
   age: number; // seconds alive
 }
 
+export interface ArtifactDropState {
+  id: string;
+  kind: ArtifactKind;
+  position: Vector2D;
+  age: number;
+}
+
 export interface WorldSnapshot {
   tick: number;
   players: PlayerState[];
   enemies: EnemyState[];
   projectiles: ProjectileState[];
   xpDrops: XpDropState[];
+  artifacts: ArtifactDropState[];
   objectives: ObjectiveState;
 }
 
@@ -303,6 +384,8 @@ export interface PlayerState {
   invulnerableTimer: number;
   lastAugmentId: AugmentId | null;
   augments: AugmentId[];
+  artifacts: ArtifactKind[];
+  lootMagnetLevel: number;
   ready: boolean;
 }
 
@@ -320,7 +403,8 @@ export function createInitialInputState(): PlayerInputState {
     primaryAbility: false,
     secondaryAbility: false,
     dash: false,
-    aimDirection: 0
+    aimDirection: 0,
+    aimHeading: 0
   };
 }
 

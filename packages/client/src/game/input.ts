@@ -32,6 +32,7 @@ export class InputController {
 
   getSnapshot(): PlayerInputState {
     this.state.aimDirection = this.getAimDirection();
+    this.state.aimHeading = this.state.aimDirection;
     return { ...this.state };
   }
 

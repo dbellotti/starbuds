@@ -1,11 +1,14 @@
 import {
   AdditiveBlending,
+  BackSide,
   AmbientLight,
   BufferGeometry,
   CanvasTexture,
   Color,
+  BoxGeometry,
   ConeGeometry,
   CylinderGeometry,
+  IcosahedronGeometry,
   DirectionalLight,
   Float32BufferAttribute,
   Group,
@@ -20,6 +23,7 @@ import {
   NearestFilter,
   OrthographicCamera,
   PlaneGeometry,
+  TorusGeometry,
   Points,
   PointsMaterial,
   Scene,
@@ -32,6 +36,7 @@ import {
   WebGLRenderer
 } from 'three';
 import type {
+  ArtifactKind,
   EnemyKind,
   EnemyState,
   LevelData,
@@ -41,7 +46,7 @@ import type {
   LevelUpOfferMessage,
   QuickPingKind
 } from '@farsight/shared';
-import { PLAYER_HURT_FLASH_TIME, PROJECTILE_LIFETIME, TILE_SIZE, TICK_RATE } from '@farsight/shared';
+import { ARTIFACT_TTL, PLAYER_HURT_FLASH_TIME, PROJECTILE_LIFETIME, TILE_SIZE, TICK_RATE } from '@farsight/shared';
 import { InputController } from './input';
 import { GameNetwork } from './network';
 import { createHud } from './hud';
@@ -58,7 +63,9 @@ const ENEMY_COLORS: Record<EnemyKind, number> = {
   hawk: 0x93c5fd,
   snake: 0x4ade80,
   raccoon: 0xd1d5db,
-  coyote: 0xfbbf24
+  coyote: 0xfbbf24,
+  weasel: 0xf87171,
+  owl: 0xd8b4fe
 };
 const PLAYER_TEXTURE = createChickenTexture();
 const ENEMY_TEXTURES = createEnemyTextures();
@@ -67,6 +74,11 @@ const PROJECTILE_STYLE: Record<ProjectileFaction, { body: number; trail: number;
   player: { body: 0x38bdf8, trail: 0x60a5fa, impact: 0x8ecaff },
   enemy: { body: 0xf87171, trail: 0xfca5a5, impact: 0xfca5a5 },
   boss: { body: 0xc084fc, trail: 0xa855f7, impact: 0xe879f9 }
+};
+const ARTIFACT_COLORS: Record<ArtifactKind, { core: number; glow: number }> = {
+  'damage-core': { core: 0xf97316, glow: 0xffedd5 },
+  'haste-spur': { core: 0x38bdf8, glow: 0xdbebff },
+  'ward-feather': { core: 0xfacc15, glow: 0xfef3c7 }
 };
 const PING_COLORS: Record<QuickPingKind, number> = {
   assist: 0x38bdf8,
@@ -245,6 +257,15 @@ export async function bootstrapGame(): Promise<void> {
   detachAugment = network.onAugmentApplied((message) => {
     const isLocal = message.playerId === network.getPlayerId();
     hud.showAugmentToast(message.augmentId, message.level, isLocal);
+    const position = worldRenderer.getPlayerWorldPosition(message.playerId);
+    if (position) {
+      const pulseColor = message.augmentId === 'foraging-aura'
+        ? 0xfacc15
+        : isLocal
+          ? 0x60a5fa
+          : 0x818cf8;
+      worldRenderer.spawnPsychicPulse(position.x, position.y, pulseColor);
+    }
     if (isLocal) {
       awaitingAugment = false;
       activeLevelUp = null;
@@ -355,6 +376,7 @@ const emptySnapshot: WorldSnapshot = {
   enemies: [],
   projectiles: [],
   xpDrops: [],
+  artifacts: [],
   objectives: {
     wave: 0,
     waveProgress: 0,
@@ -408,6 +430,30 @@ const pointerNear = new Vector3();
 const pointerFar = new Vector3();
 const pointerDir = new Vector3();
 
+type ChickenRig = {
+  leftWing: Mesh;
+  rightWing: Mesh;
+  head: Mesh;
+  tail: Mesh;
+  base: {
+    leftWingZ: number;
+    rightWingZ: number;
+    headX: number;
+    tailX: number;
+  };
+};
+
+type EnemyRig = {
+  leftWing?: Mesh;
+  rightWing?: Mesh;
+  tail?: Mesh;
+  base?: {
+    leftWingZ?: number;
+    rightWingZ?: number;
+    tailZ?: number;
+  };
+};
+
 function updatePointerWorld(
   event: PointerEvent,
   renderer: WebGLRenderer,
@@ -445,9 +491,9 @@ function followCamera(
     return;
   }
   const smooth = Math.min(1, deltaSeconds * 3);
-  const desiredY = mode === 'tilt' ? 360 : 520;
-  const desiredZ = mode === 'tilt' ? target.y + 220 : target.y + 280;
-  const desiredX = mode === 'tilt' ? target.x : target.x + 0;
+  const desiredY = mode === 'tilt' ? 320 : 520;
+  const desiredZ = mode === 'tilt' ? target.y + 460 : target.y + 280;
+  const desiredX = mode === 'tilt' ? target.x : target.x;
   camera.position.x = MathUtils.lerp(camera.position.x, desiredX, smooth);
   camera.position.y = MathUtils.lerp(camera.position.y, desiredY, smooth);
   camera.position.z = MathUtils.lerp(camera.position.z, desiredZ, smooth);
@@ -477,10 +523,13 @@ class WorldRenderer {
   private readonly enemies = new Map<string, EnemyAvatar>();
   private readonly projectiles = new Map<string, ProjectileAvatar>();
   private readonly xpDrops = new Map<string, XpOrb>();
+  private readonly artifacts = new Map<string, ArtifactShard>();
   private readonly levelRenderer = new LevelRenderer();
   private readonly projectileGroup = new Group();
   private readonly xpGroup = new Group();
+  private readonly artifactGroup = new Group();
   private readonly impactSystem = new ImpactSystem();
+  private readonly pulseSystem = new PsychicPulseSystem();
   private readonly decor = new DecorRenderer();
   private readonly enemyPool: EnemyAvatar[] = [];
   private readonly projectilePool: ProjectileAvatar[] = [];
@@ -492,7 +541,9 @@ class WorldRenderer {
     this.sceneGroup.add(this.levelRenderer.group);
     this.sceneGroup.add(this.projectileGroup);
     this.sceneGroup.add(this.xpGroup);
+    this.sceneGroup.add(this.artifactGroup);
     this.sceneGroup.add(this.impactSystem.group);
+    this.sceneGroup.add(this.pulseSystem.group);
   }
 
   applyLevel(level: LevelData): void {
@@ -514,6 +565,7 @@ class WorldRenderer {
     const seenEnemies = new Set<string>();
     const seenProjectiles = new Set<string>();
     const seenXp = new Set<string>();
+    const seenArtifacts = new Set<string>();
     const targetedCounts = new Map<string, number>();
 
     for (const player of snapshot.players) {
@@ -545,6 +597,7 @@ class WorldRenderer {
 
     for (const projectile of snapshot.projectiles) {
       let avatar = this.projectiles.get(projectile.id);
+      const created = !avatar;
       if (!avatar) {
         avatar = this.projectilePool.pop() ?? new ProjectileAvatar(this.projectileGroup);
         avatar.reset(projectile.id, projectile.faction);
@@ -561,6 +614,10 @@ class WorldRenderer {
         projectile.power
       );
       seenProjectiles.add(projectile.id);
+      if (created && projectile.faction === 'player') {
+        const owner = this.players.get(projectile.ownerId);
+        owner?.notifyAttack();
+      }
     }
 
     for (const drop of snapshot.xpDrops) {
@@ -571,6 +628,16 @@ class WorldRenderer {
       }
       orb.setState(drop.position.x, drop.position.y, drop.amount, drop.age);
       seenXp.add(drop.id);
+    }
+
+    for (const drop of snapshot.artifacts) {
+      let shard = this.artifacts.get(drop.id);
+      if (!shard) {
+        shard = new ArtifactShard(drop.id, this.artifactGroup);
+        this.artifacts.set(drop.id, shard);
+      }
+      shard.setState(drop.position.x, drop.position.y, drop.kind, drop.age);
+      seenArtifacts.add(drop.id);
     }
 
     for (const [id, avatar] of this.players.entries()) {
@@ -611,11 +678,24 @@ class WorldRenderer {
         this.xpDrops.delete(id);
       }
     }
+
+    for (const [id, shard] of this.artifacts.entries()) {
+      if (!seenArtifacts.has(id)) {
+        if (shard.getAge() < ARTIFACT_TTL - 0.2) {
+          const pos = shard.getPosition();
+          const color = ARTIFACT_COLORS[shard.getKind()].core;
+          this.spawnPsychicPulse(pos.x, pos.y, color);
+        }
+        shard.dispose();
+        this.artifacts.delete(id);
+      }
+    }
   }
 
   update(deltaSeconds: number): void {
     XP_ORB_TIME.value = performance.now() * 0.001;
-    this.decor.update(deltaSeconds);
+    const focus = this.getLocalPlayerPosition();
+    this.decor.update(deltaSeconds, focus);
     for (const avatar of this.players.values()) {
       avatar.update(deltaSeconds);
     }
@@ -628,7 +708,11 @@ class WorldRenderer {
     for (const orb of this.xpDrops.values()) {
       orb.update(deltaSeconds);
     }
+    for (const shard of this.artifacts.values()) {
+      shard.update(deltaSeconds);
+    }
     this.impactSystem.update(deltaSeconds);
+    this.pulseSystem.update(deltaSeconds);
   }
 
   spawnPing(x: number, y: number, kind: QuickPingKind, isLocal: boolean): void {
@@ -642,11 +726,23 @@ class WorldRenderer {
     this.impactSystem.spawn(x, y, tint);
   }
 
+  spawnPsychicPulse(x: number, y: number, color: number): void {
+    this.pulseSystem.spawn(x, y, color);
+  }
+
   getLocalPlayerPosition(): Vector2 | null {
     if (!this.localPlayerId) {
       return null;
     }
     const avatar = this.players.get(this.localPlayerId);
+    if (!avatar) {
+      return null;
+    }
+    return avatar.getPosition();
+  }
+
+  getPlayerWorldPosition(playerId: string): Vector2 | null {
+    const avatar = this.players.get(playerId);
     if (!avatar) {
       return null;
     }
@@ -682,7 +778,12 @@ class WorldRenderer {
       orb.dispose();
     }
     this.xpDrops.clear();
+    for (const shard of this.artifacts.values()) {
+      shard.dispose();
+    }
+    this.artifacts.clear();
     this.impactSystem.clear();
+    this.pulseSystem.clear();
   }
 }
 
@@ -692,6 +793,12 @@ class DecorRenderer {
   private spawnGlow: Mesh | null = null;
   private particles: Points | null = null;
   private props: InstancedMesh[] = [];
+  private accentGroups: Group[] = [];
+  private windmillHubs: Group[] = [];
+  private swayTufts: Mesh[] = [];
+  private skyDome: Mesh | null = null;
+  private horizon: Mesh | null = null;
+  private worldSize = { width: 0, height: 0 };
   private time = 0;
 
   applyLevel(level: LevelData): void {
@@ -699,6 +806,7 @@ class DecorRenderer {
 
     const worldWidth = level.width * TILE_SIZE;
     const worldHeight = level.height * TILE_SIZE;
+    this.worldSize = { width: worldWidth, height: worldHeight };
 
     const backdropGeometry = new PlaneGeometry(worldWidth + 360, worldHeight + 360);
     backdropGeometry.rotateX(-Math.PI / 2);
@@ -723,6 +831,8 @@ class DecorRenderer {
     this.spawnGlow.position.y = 0.5;
     this.group.add(this.spawnGlow);
 
+    this.createParallaxSky(worldWidth, worldHeight, level.biome);
+
     const particleCount = 180;
     const positions = new Float32Array(particleCount * 3);
     for (let i = 0; i < particleCount; i += 1) {
@@ -742,14 +852,17 @@ class DecorRenderer {
       blending: AdditiveBlending
     });
     this.particles = new Points(particleGeometry, particleMaterial);
+    this.particles.frustumCulled = true;
+    this.particles.geometry.computeBoundingSphere();
     this.group.add(this.particles);
 
     this.createBiomeProps(level);
+    this.createAccentProps(level);
 
     this.time = 0;
   }
 
-  update(deltaSeconds: number): void {
+  update(deltaSeconds: number, focus: Vector2 | null = null): void {
     this.time += deltaSeconds;
     if (this.spawnGlow) {
       const material = this.spawnGlow.material as MeshBasicMaterial;
@@ -763,6 +876,32 @@ class DecorRenderer {
       const material = this.particles.material as PointsMaterial;
       material.size = 5 + Math.sin(this.time * 1.7) * 1.5;
       material.needsUpdate = true;
+    }
+
+    for (const hub of this.windmillHubs) {
+      hub.rotation.z += deltaSeconds * 2.1;
+    }
+
+    for (const tuft of this.swayTufts) {
+      const data = tuft.userData as { base: number; phase: number; sway: number };
+      tuft.rotation.z = data.base + Math.sin(this.time * 1.8 + data.phase) * data.sway;
+    }
+
+    if (focus) {
+      const px = (focus.x / Math.max(1, this.worldSize.width)) * 48;
+      const pz = (focus.y / Math.max(1, this.worldSize.height)) * 36;
+      if (this.horizon) {
+        this.horizon.position.x = px;
+        this.horizon.position.z = pz;
+      }
+      if (this.skyDome) {
+        this.skyDome.position.x = px * 0.5;
+        this.skyDome.position.z = pz * 0.5;
+      }
+    }
+
+    if (this.skyDome) {
+      this.skyDome.rotation.y += deltaSeconds * 0.02;
     }
   }
 
@@ -789,6 +928,18 @@ class DecorRenderer {
       (this.particles.material as PointsMaterial).dispose();
       this.particles = null;
     }
+    if (this.skyDome) {
+      this.group.remove(this.skyDome);
+      this.skyDome.geometry.dispose();
+      disposeMaterial(this.skyDome.material as MeshBasicMaterial);
+      this.skyDome = null;
+    }
+    if (this.horizon) {
+      this.group.remove(this.horizon);
+      this.horizon.geometry.dispose();
+      disposeMaterial(this.horizon.material as MeshBasicMaterial);
+      this.horizon = null;
+    }
     for (const mesh of this.props) {
       this.group.remove(mesh);
       mesh.geometry.dispose();
@@ -801,6 +952,136 @@ class DecorRenderer {
       mesh.dispose();
     }
     this.props = [];
+    for (const accent of this.accentGroups) {
+      this.group.remove(accent);
+      disposeModel(accent);
+    }
+    this.accentGroups = [];
+    this.windmillHubs = [];
+    this.swayTufts = [];
+  }
+
+  private createParallaxSky(width: number, height: number, biome: LevelData['biome']): void {
+    const radius = Math.max(width, height) * 0.9 + 320;
+    const domeGeometry = new SphereGeometry(radius, 26, 20, 0, Math.PI * 2, 0, Math.PI / 2);
+    domeGeometry.scale(1, 0.7, 1);
+    const domeMaterial = new MeshBasicMaterial({
+      color: 0x0f172a,
+      transparent: true,
+      opacity: 0.55,
+      side: BackSide,
+      depthWrite: false
+    });
+    const dome = new Mesh(domeGeometry, domeMaterial);
+    dome.position.y = radius * 0.32;
+    this.skyDome = dome;
+    this.group.add(dome);
+
+    const horizonGeometry = new PlaneGeometry(radius * 1.4, radius * 0.75);
+    const horizonMaterial = new MeshBasicMaterial({
+      map: createHorizonTexture(biome),
+      transparent: true,
+      opacity: 0.9,
+      depthWrite: false
+    });
+    const horizon = new Mesh(horizonGeometry, horizonMaterial);
+    horizon.position.set(0, 110, -height * 0.45);
+    horizon.renderOrder = -2;
+    this.horizon = horizon;
+    this.group.add(horizon);
+  }
+
+  private createAccentProps(level: LevelData): void {
+    if (level.biome === 'barnyard') {
+      this.createBarnyardWindmill(level);
+    }
+    if (level.biome !== 'lab') {
+      this.createGrassField(level);
+    }
+  }
+
+  private createBarnyardWindmill(level: LevelData): void {
+    const windmill = new Group();
+    const towerMaterial = new MeshStandardMaterial({ color: 0xf97316, roughness: 0.65, metalness: 0.08 });
+    const tower = new Mesh(new CylinderGeometry(6, 8, 42, 10, 1, false), towerMaterial);
+    tower.position.y = 21;
+    windmill.add(tower);
+
+    const roofMaterial = new MeshStandardMaterial({ color: 0xf59e0b, roughness: 0.5, metalness: 0.12 });
+    const roof = new Mesh(new ConeGeometry(9, 9, 8, 1), roofMaterial);
+    roof.position.y = 42 + 4.5;
+    windmill.add(roof);
+
+    const hub = new Group();
+    hub.position.set(0, 34, 6);
+
+    const hubMaterial = new MeshStandardMaterial({ color: 0xfde68a, roughness: 0.4, metalness: 0.1 });
+    const hubCore = new Mesh(new CylinderGeometry(2.4, 2.4, 4, 12, 1, false), hubMaterial);
+    hubCore.rotation.x = Math.PI / 2;
+    hub.add(hubCore);
+
+    const bladeGeometry = new BoxGeometry(2.2, 26, 1.2);
+    for (let i = 0; i < 4; i += 1) {
+      const arm = new Group();
+      const blade = new Mesh(bladeGeometry, hubMaterial);
+      blade.position.y = 13;
+      arm.add(blade);
+      arm.rotation.z = (Math.PI / 2) * i;
+      hub.add(arm);
+    }
+
+    windmill.add(hub);
+
+    const offsetX = tileToWorldX(Math.max(2, Math.floor(level.width * 0.2)), level);
+    const offsetZ = tileToWorldZ(Math.max(2, Math.floor(level.height * 0.18)), level);
+    windmill.position.set(offsetX, 0, offsetZ);
+
+    this.group.add(windmill);
+    this.accentGroups.push(windmill);
+    this.windmillHubs.push(hub);
+  }
+
+  private createGrassField(level: LevelData): void {
+    const worldPositions: Array<{ x: number; y: number }> = [];
+    for (let y = 0; y < level.height; y += 1) {
+      for (let x = 0; x < level.width; x += 1) {
+        const tile = level.tiles[y * level.width + x];
+        if (tile === 'floor') {
+          worldPositions.push({ x, y });
+        }
+      }
+    }
+    if (worldPositions.length === 0) {
+      return;
+    }
+
+    const rng = mulberry32(level.seed ^ 0x51a53c2f);
+    const count = Math.min(80, Math.max(18, Math.floor(worldPositions.length * 0.06)));
+    const group = new Group();
+    const geometry = new ConeGeometry(1.6, 6.2, 6, 1);
+    geometry.translate(0, 3.1, 0);
+    const palette = level.biome === 'forest' ? 0x22c55e : 0xfcd34d;
+    const material = new MeshStandardMaterial({ color: palette, roughness: 0.6, metalness: 0.12, emissive: 0x09241a, emissiveIntensity: level.biome === 'forest' ? 0.18 : 0.08 });
+
+    for (let i = 0; i < count; i += 1) {
+      const sample = worldPositions[Math.floor(rng() * worldPositions.length)];
+      const mesh = new Mesh(geometry.clone(), material);
+      const worldX = tileToWorldX(sample.x, level) + (rng() - 0.5) * TILE_SIZE * 0.8;
+      const worldZ = tileToWorldZ(sample.y, level) + (rng() - 0.5) * TILE_SIZE * 0.8;
+      mesh.position.set(worldX, 0, worldZ);
+      const baseRotation = (rng() - 0.5) * 0.4;
+      mesh.rotation.z = baseRotation;
+      mesh.userData = {
+        base: baseRotation,
+        phase: rng() * Math.PI * 2,
+        sway: 0.22 + rng() * 0.18
+      };
+      group.add(mesh);
+      this.swayTufts.push(mesh);
+    }
+
+    this.group.add(group);
+    this.accentGroups.push(group);
   }
 
   private createBiomeProps(level: LevelData): void {
@@ -979,6 +1260,10 @@ class PlayerAvatar {
   private isLocal = false;
   private displayName = '';
   private initialized = false;
+  private attackTimer = 0;
+  private movementSpeed = 0;
+  private readonly animationPhase = Math.random() * Math.PI * 2;
+  private readonly rig: ChickenRig | null;
 
   constructor(id: string, isLocal: boolean) {
     this.id = id;
@@ -1001,6 +1286,7 @@ class PlayerAvatar {
     this.mesh.add(this.body);
 
     this.lowPoly = createChickenModel(pickColor(id, isLocal));
+    this.rig = (this.lowPoly.userData.rig as ChickenRig | undefined) ?? null;
     this.lowPoly.position.y = PLAYER_HEIGHT * 0.6;
     this.mesh.add(this.lowPoly);
 
@@ -1028,6 +1314,7 @@ class PlayerAvatar {
     this.displayName = state.displayName;
     this.targetPosition.set(state.position.x, state.position.y);
     this.targetFacing = state.facing;
+    this.movementSpeed = Math.hypot(state.velocity.x, state.velocity.y);
     this.hurtTimer = Math.max(this.hurtTimer, state.hurtTimer);
     this.invulnerableTimer = Math.max(this.invulnerableTimer, state.invulnerableTimer);
     if (!this.initialized) {
@@ -1064,6 +1351,8 @@ class PlayerAvatar {
     this.mesh.position.set(this.currentPosition.x, 0, this.currentPosition.y);
     this.mesh.rotation.y = -this.currentFacing + Math.PI / 2;
 
+    this.attackTimer = Math.max(0, this.attackTimer - deltaSeconds);
+
     const hurtRatio = PLAYER_HURT_FLASH_TIME > 0 ? Math.min(1, this.hurtTimer / PLAYER_HURT_FLASH_TIME) : 0;
     this.tempColor.copy(this.baseColor);
     if (hurtRatio > 0) {
@@ -1090,6 +1379,24 @@ class PlayerAvatar {
         this.reticle.visible = false;
       }
     }
+
+    if (this.rig) {
+      const moveRatio = Math.min(1, this.movementSpeed / 180);
+      const attackBoost = this.attackTimer > 0 ? 1 + this.attackTimer * 2.4 : 1;
+      const flapSpeed = 5.2 + moveRatio * 6.4;
+      const flapAmplitude = 0.28 + moveRatio * 0.42 + this.attackTimer * 0.9;
+      const phase = this.time * flapSpeed + this.animationPhase;
+      const flap = Math.sin(phase) * flapAmplitude * attackBoost;
+      this.rig.leftWing.rotation.z = this.rig.base.leftWingZ + flap;
+      this.rig.rightWing.rotation.z = this.rig.base.rightWingZ - flap;
+
+      const headBob = Math.sin(this.time * 3.6 + this.animationPhase * 0.6) * 0.12 * (0.5 + moveRatio);
+      this.rig.head.rotation.x = this.rig.base.headX + headBob - this.attackTimer * 0.5;
+
+      const tailSwing = Math.sin(this.time * 4.4 + this.animationPhase) * 0.18 * (0.4 + moveRatio);
+      this.rig.tail.rotation.x = this.rig.base.tailX + tailSwing + moveRatio * 0.18;
+      this.rig.tail.rotation.y = Math.cos(this.time * 3.1 + this.animationPhase) * 0.22 * (0.3 + moveRatio);
+    }
   }
 
   getPosition(): Vector2 {
@@ -1098,6 +1405,10 @@ class PlayerAvatar {
 
   getHurtIntensity(): number {
     return PLAYER_HURT_FLASH_TIME > 0 ? Math.min(1, this.hurtTimer / PLAYER_HURT_FLASH_TIME) : 0;
+  }
+
+  notifyAttack(): void {
+    this.attackTimer = 0.32;
   }
 }
 
@@ -1109,6 +1420,7 @@ class EnemyAvatar {
   private readonly telegraph: Mesh;
   private readonly telegraphMaterial: MeshBasicMaterial;
   private model: Group | null = null;
+  private rig: EnemyRig | null = null;
   private readonly currentPosition = new Vector2();
   private readonly targetPosition = new Vector2();
   private currentFacing = 0;
@@ -1121,6 +1433,8 @@ class EnemyAvatar {
   private initialized = false;
   private id = '';
   private kind: EnemyKind = 'fox';
+  private baseModelHeight = 9;
+  private baseOpacity = 0.95;
 
   constructor(parent: Group) {
     this.parent = parent;
@@ -1171,7 +1485,8 @@ class EnemyAvatar {
     this.material.map = ENEMY_TEXTURES[kind];
     this.material.needsUpdate = true;
     this.material.color.setHex(ENEMY_COLORS[kind]);
-    this.material.opacity = kind === 'coyote' ? 1 : 0.95;
+    this.baseOpacity = kind === 'coyote' ? 1 : 0.95;
+    this.material.opacity = this.baseOpacity;
     const scale = kind === 'coyote' ? 1.35 : 1;
     this.body.scale.setScalar(scale);
     this.telegraphMaterial.opacity = 0;
@@ -1183,7 +1498,9 @@ class EnemyAvatar {
       this.model = null;
     }
     this.model = createEnemyModel(kind);
-    this.model.position.y = kind === 'coyote' ? 14 : 9;
+    this.rig = (this.model.userData.rig as EnemyRig | undefined) ?? null;
+    this.baseModelHeight = kind === 'coyote' ? 14 : 9;
+    this.model.position.y = this.baseModelHeight;
     this.mesh.add(this.model);
   }
 
@@ -1204,6 +1521,7 @@ class EnemyAvatar {
       disposeModel(this.model);
       this.model = null;
     }
+    this.rig = null;
   }
 
   setState(state: EnemyState): void {
@@ -1233,11 +1551,62 @@ class EnemyAvatar {
     this.mesh.position.set(this.currentPosition.x, 0, this.currentPosition.y);
     this.mesh.rotation.y = -this.currentFacing + Math.PI / 2;
 
+    if (this.model) {
+      if (this.intent === 'burrow') {
+        const ratio = this.displayIntentDuration > 0
+          ? Math.max(0, Math.min(1, this.displayIntentTimer / this.displayIntentDuration))
+          : 0.5;
+        const scale = Math.max(0.35, 1 - ratio * 0.75);
+        this.model.scale.setScalar(scale);
+        this.model.position.y = Math.max(2.2, this.baseModelHeight * scale * 0.6);
+        this.material.opacity = Math.max(0.25, this.baseOpacity * scale);
+        this.body.visible = false;
+      } else {
+        const hover = 1 + Math.sin((this.time + this.currentPosition.length() * 0.003) * 3.2) * 0.05;
+        let scale = hover;
+        if (this.intent === 'channel') {
+          scale += 0.12;
+        }
+        this.model.scale.setScalar(scale);
+        this.model.position.y = this.baseModelHeight + Math.sin(this.time * 2.8) * 0.3;
+        this.material.opacity = this.baseOpacity;
+        this.body.visible = true;
+      }
+
+      if (this.kind === 'owl' && this.rig?.leftWing && this.rig?.rightWing) {
+        const base = this.rig.base;
+        const flap = Math.sin(this.time * 5.4 + this.currentPosition.length() * 0.01) * 0.35 + (this.intent === 'channel' ? 0.18 : 0);
+        if (base?.leftWingZ !== undefined) {
+          this.rig.leftWing.rotation.z = base.leftWingZ + flap;
+        }
+        if (base?.rightWingZ !== undefined) {
+          this.rig.rightWing.rotation.z = base.rightWingZ - flap;
+        }
+      }
+
+      if (this.kind === 'weasel' && this.rig?.tail) {
+        const base = this.rig.base;
+        const wag = Math.sin(this.time * 6.2 + this.currentPosition.x * 0.01) * 0.35;
+        if (base?.tailZ !== undefined) {
+          this.rig.tail.rotation.z = base.tailZ + wag;
+        } else {
+          this.rig.tail.rotation.z = wag;
+        }
+        this.rig.tail.rotation.y = Math.cos(this.time * 3.8) * 0.18;
+      }
+    }
+
     this.updateTelegraph(deltaSeconds);
   }
 
   private updateTelegraph(deltaSeconds: number): void {
     const diameter = Math.max(24, this.attackRange * 2);
+    if (this.intent === 'burrow') {
+      this.telegraph.visible = false;
+      this.telegraphMaterial.opacity = 0;
+      return;
+    }
+
     if (this.intent === 'windup') {
       this.displayIntentTimer = Math.max(0, this.displayIntentTimer - deltaSeconds);
       const progress = this.displayIntentDuration > 0 ? 1 - this.displayIntentTimer / this.displayIntentDuration : 1;
@@ -1245,6 +1614,7 @@ class EnemyAvatar {
       this.telegraph.visible = true;
       this.telegraph.scale.setScalar(diameter * pulse);
       this.telegraphMaterial.opacity = Math.min(0.9, 0.25 + progress * 0.55);
+      this.telegraphMaterial.color.setHex(this.kind === 'owl' ? 0xfde68a : this.kind === 'coyote' ? 0xf59e0b : 0xffffff);
     } else if (this.intent === 'recover') {
       this.telegraph.visible = true;
       this.telegraph.scale.setScalar(diameter);
@@ -1252,6 +1622,12 @@ class EnemyAvatar {
       if (this.telegraphMaterial.opacity <= 0.02) {
         this.telegraph.visible = false;
       }
+    } else if (this.intent === 'channel') {
+      const pulse = 1 + Math.sin((this.time + this.floatOffset()) * 6) * 0.12;
+      this.telegraph.visible = true;
+      this.telegraph.scale.setScalar(diameter * pulse);
+      this.telegraphMaterial.color.setHex(this.kind === 'owl' ? 0xd8b4fe : 0xffffff);
+      this.telegraphMaterial.opacity = 0.32 + Math.sin((this.time + this.floatOffset()) * 4) * 0.12;
     } else if (this.telegraph.visible) {
       this.telegraphMaterial.opacity = Math.max(0, this.telegraphMaterial.opacity - deltaSeconds * 2.2);
       this.telegraph.scale.setScalar(diameter);
@@ -1259,6 +1635,10 @@ class EnemyAvatar {
         this.telegraph.visible = false;
       }
     }
+  }
+
+  private floatOffset(): number {
+    return (this.currentPosition.x + this.currentPosition.y) * 0.005;
   }
 }
 
@@ -1494,6 +1874,235 @@ class ImpactSystem {
   }
 }
 
+class PsychicPulseSystem {
+  readonly group = new Group();
+  private readonly pool: Mesh[] = [];
+  private readonly active: Mesh[] = [];
+  private readonly geometry: PlaneGeometry;
+
+  constructor() {
+    this.geometry = new PlaneGeometry(1, 1);
+    this.geometry.rotateX(-Math.PI / 2);
+  }
+
+  spawn(x: number, y: number, color: number): void {
+    const mesh = this.pool.pop() ?? this.createMesh();
+    const material = mesh.material as ShaderMaterial;
+    material.uniforms.uColor.value.setHex(color);
+    material.uniforms.uProgress.value = 0;
+    mesh.position.set(x, 2, y);
+    mesh.scale.setScalar(52);
+    mesh.userData.remaining = 0.9;
+    mesh.userData.duration = 0.9;
+    mesh.userData.baseScale = 52;
+    this.group.add(mesh);
+    this.active.push(mesh);
+  }
+
+  update(deltaSeconds: number): void {
+    for (let i = this.active.length - 1; i >= 0; i -= 1) {
+      const mesh = this.active[i];
+      mesh.userData.remaining -= deltaSeconds;
+      const remaining: number = mesh.userData.remaining;
+      const duration: number = mesh.userData.duration;
+      if (remaining <= 0) {
+        this.recycle(i);
+        continue;
+      }
+      const progress = 1 - remaining / duration;
+      const material = mesh.material as ShaderMaterial;
+      material.uniforms.uProgress.value = progress;
+      material.needsUpdate = true;
+      const growth = 1 + progress * 1.8;
+      mesh.scale.setScalar(mesh.userData.baseScale * growth);
+      mesh.position.y = 2 + progress * 6;
+    }
+  }
+
+  clear(): void {
+    for (let i = this.active.length - 1; i >= 0; i -= 1) {
+      this.recycle(i);
+    }
+  }
+
+  private createMesh(): Mesh {
+    const material = new ShaderMaterial({
+      uniforms: {
+        uProgress: { value: 0 },
+        uColor: { value: new Color(0x60a5fa) }
+      },
+      transparent: true,
+      blending: AdditiveBlending,
+      depthWrite: false,
+      toneMapped: false,
+      vertexShader: `
+        varying vec2 vUv;
+        void main() {
+          vUv = uv;
+          gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+        }
+      `,
+      fragmentShader: `
+        uniform float uProgress;
+        uniform vec3 uColor;
+        varying vec2 vUv;
+
+        void main() {
+          vec2 centered = vUv - 0.5;
+          float dist = length(centered);
+          float falloff = smoothstep(0.48, 0.1, dist);
+          float ring = smoothstep(0.32, 0.18, dist) - smoothstep(0.12, 0.08, dist);
+          float pulse = sin((0.5 - dist) * 12.0 + uProgress * 8.0) * 0.35 + 0.75;
+          float alpha = clamp((1.0 - uProgress) * falloff * (0.6 + ring * pulse), 0.0, 1.0);
+          if (alpha <= 0.01) {
+            discard;
+          }
+          gl_FragColor = vec4(uColor, alpha);
+        }
+      `
+    });
+    const mesh = new Mesh(this.geometry, material);
+    mesh.renderOrder = 5;
+    mesh.userData.remaining = 0;
+    mesh.userData.duration = 0;
+    mesh.userData.baseScale = 52;
+    return mesh;
+  }
+
+  private recycle(index: number): void {
+    const mesh = this.active[index];
+    this.group.remove(mesh);
+    this.pool.push(mesh);
+    this.active.splice(index, 1);
+  }
+}
+
+class ArtifactShard {
+  readonly id: string;
+  private readonly parent: Group;
+  readonly group: Group;
+  private readonly core: Mesh;
+  private readonly ring: Mesh;
+  private readonly aura: Mesh;
+  private readonly coreMaterial: MeshStandardMaterial;
+  private readonly ringMaterial: MeshBasicMaterial;
+  private readonly auraMaterial: MeshBasicMaterial;
+  private readonly currentPosition = new Vector2();
+  private readonly targetPosition = new Vector2();
+  private initialized = false;
+  private time = 0;
+  private kind: ArtifactKind = 'damage-core';
+  private readonly floatPhase = Math.random() * Math.PI * 2;
+
+  constructor(id: string, parent: Group) {
+    this.id = id;
+    this.parent = parent;
+    this.group = new Group();
+    this.group.renderOrder = 3;
+
+    this.coreMaterial = new MeshStandardMaterial({
+      color: ARTIFACT_COLORS['damage-core'].core,
+      emissive: 0x0f172a,
+      emissiveIntensity: 0.35,
+      roughness: 0.3,
+      metalness: 0.65
+    });
+    this.core = new Mesh(new IcosahedronGeometry(9, 0), this.coreMaterial);
+    this.core.castShadow = false;
+    this.core.receiveShadow = false;
+    this.group.add(this.core);
+
+    this.ringMaterial = new MeshBasicMaterial({
+      color: ARTIFACT_COLORS['damage-core'].core,
+      transparent: true,
+      opacity: 0.6,
+      blending: AdditiveBlending,
+      depthWrite: false
+    });
+    this.ring = new Mesh(new TorusGeometry(12, 1.6, 12, 28), this.ringMaterial);
+    this.ring.rotation.x = Math.PI / 2;
+    this.group.add(this.ring);
+
+    const auraTexture = createRadialTexture('rgba(255,255,255,0.25)', 'rgba(255,255,255,0.12)', 'rgba(255,255,255,0)');
+    this.auraMaterial = new MeshBasicMaterial({
+      map: auraTexture,
+      transparent: true,
+      opacity: 0.3,
+      blending: AdditiveBlending,
+      depthWrite: false
+    });
+    const auraGeometry = new PlaneGeometry(1, 1);
+    auraGeometry.rotateX(-Math.PI / 2);
+    this.aura = new Mesh(auraGeometry, this.auraMaterial);
+    this.aura.renderOrder = 1;
+    this.group.add(this.aura);
+
+    parent.add(this.group);
+  }
+
+  setState(x: number, y: number, kind: ArtifactKind, age: number): void {
+    this.targetPosition.set(x, y);
+    if (!this.initialized) {
+      this.currentPosition.set(x, y);
+      this.group.position.set(x, 0, y);
+      this.initialized = true;
+    }
+    if (this.kind !== kind) {
+      this.kind = kind;
+      const swatch = ARTIFACT_COLORS[kind];
+      this.coreMaterial.color.setHex(swatch.core);
+      this.ringMaterial.color.setHex(swatch.core);
+      this.auraMaterial.color.setHex(swatch.glow);
+    }
+    this.time = age;
+  }
+
+  update(deltaSeconds: number): void {
+    this.time += deltaSeconds;
+    const lerp = Math.min(1, deltaSeconds * 7);
+    this.currentPosition.lerp(this.targetPosition, lerp);
+    this.group.position.set(this.currentPosition.x, 0, this.currentPosition.y);
+
+    const float = Math.sin((this.time + this.floatPhase) * 2.4) * 3.5 + 11;
+    this.core.position.y = float;
+    this.ring.position.y = float - 2.5;
+    this.aura.position.y = 1.2;
+
+    this.core.rotation.x += deltaSeconds * 0.8;
+    this.core.rotation.y += deltaSeconds * 1.1;
+    this.ring.rotation.z += deltaSeconds * 0.7;
+
+    const auraScale = 36 + Math.sin((this.time + this.floatPhase) * 3) * 4;
+    this.aura.scale.setScalar(auraScale);
+    this.auraMaterial.opacity = 0.24 + Math.sin((this.time + this.floatPhase) * 2.6) * 0.08;
+  }
+
+  getPosition(): Vector2 {
+    return this.currentPosition.clone();
+  }
+
+  getAge(): number {
+    return this.time;
+  }
+
+  getKind(): ArtifactKind {
+    return this.kind;
+  }
+
+  dispose(): void {
+    if (this.group.parent === this.parent) {
+      this.parent.remove(this.group);
+    }
+    this.core.geometry.dispose();
+    this.coreMaterial.dispose();
+    this.ring.geometry.dispose();
+    this.ringMaterial.dispose();
+    (this.aura.geometry as PlaneGeometry).dispose();
+    this.auraMaterial.map?.dispose();
+    this.auraMaterial.dispose();
+  }
+}
+
 class XpOrb {
   readonly mesh: Mesh;
   readonly id: string;
@@ -1595,7 +2204,9 @@ function createEnemyTextures(): Record<EnemyKind, CanvasTexture> {
     hawk: createEnemyTexture('#bfdbfe', '#f8fafc'),
     snake: createEnemyTexture('#4ade80', '#bbf7d0'),
     raccoon: createEnemyTexture('#9ca3af', '#f3f4f6'),
-    coyote: createEnemyTexture('#fbbf24', '#fef3c7')
+    coyote: createEnemyTexture('#fbbf24', '#fef3c7'),
+    weasel: createEnemyTexture('#f9738f', '#ffe4e6'),
+    owl: createEnemyTexture('#c4b5fd', '#ede9fe')
   };
 }
 
@@ -1644,33 +2255,141 @@ function createBiomeMaterials(biome: LevelData['biome'], seed: number): {
 } {
   const rng = mulberry32(seed ^ 0x9e3779b9);
 
-  const floorTexture = createFloorTexture(biome, rng);
-  const spawnTexture = createSpawnTexture(biome, rng);
-  const wallTexture = createWallTexture(biome, rng);
+  const atlas = packCanvasTextures([
+    { id: 'floor', texture: createFloorTexture(biome, rng) },
+    { id: 'spawn', texture: createSpawnTexture(biome, rng) },
+    { id: 'wall', texture: createWallTexture(biome, rng) }
+  ]);
 
   const floorMaterial = new MeshStandardMaterial({
-    map: floorTexture,
+    map: atlas.texture,
     color: 0xffffff,
     metalness: 0.08,
     roughness: 0.78,
     transparent: true
   });
+  applyTextureRegion(floorMaterial, atlas.regions.floor);
+
   const spawnMaterial = new MeshStandardMaterial({
-    map: spawnTexture,
+    map: atlas.texture,
     color: 0xffffff,
     metalness: 0.05,
     roughness: 0.7,
     transparent: true
   });
+  applyTextureRegion(spawnMaterial, atlas.regions.spawn);
+
   const wallMaterial = new MeshStandardMaterial({
-    map: wallTexture,
+    map: atlas.texture,
     color: 0xffffff,
     metalness: 0.2,
     roughness: 0.55,
     transparent: true
   });
+  applyTextureRegion(wallMaterial, atlas.regions.wall);
 
   return { floor: floorMaterial, spawn: spawnMaterial, wall: wallMaterial };
+}
+
+type TextureRegion = {
+  offset: { x: number; y: number };
+  size: { x: number; y: number };
+};
+
+function applyTextureRegion(material: MeshStandardMaterial, region: TextureRegion): void {
+  const map = material.map;
+  if (!map) {
+    return;
+  }
+  map.offset.set(region.offset.x, region.offset.y);
+  map.repeat.set(region.size.x, region.size.y);
+  map.needsUpdate = true;
+}
+
+function packCanvasTextures(
+  entries: Array<{ id: string; texture: CanvasTexture }>
+): { texture: CanvasTexture; regions: Record<string, TextureRegion> } {
+  let totalWidth = 0;
+  let maxHeight = 0;
+  for (const entry of entries) {
+    const image = entry.texture.image as HTMLCanvasElement;
+    totalWidth += image.width;
+    maxHeight = Math.max(maxHeight, image.height);
+  }
+  const atlasWidth = nextPowerOfTwo(totalWidth);
+  const atlasHeight = nextPowerOfTwo(maxHeight);
+  const canvas = document.createElement('canvas');
+  canvas.width = atlasWidth;
+  canvas.height = atlasHeight;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) {
+    throw new Error('Failed to create atlas context');
+  }
+
+  const regions: Record<string, TextureRegion> = {};
+  let cursorX = 0;
+  for (const entry of entries) {
+    const image = entry.texture.image as HTMLCanvasElement;
+    const drawY = atlasHeight - image.height;
+    ctx.drawImage(image, cursorX, drawY);
+    regions[entry.id] = {
+      offset: { x: cursorX / atlasWidth, y: drawY / atlasHeight },
+      size: { x: image.width / atlasWidth, y: image.height / atlasHeight }
+    };
+    cursorX += image.width;
+    entry.texture.dispose();
+  }
+
+  const texture = new CanvasTexture(canvas);
+  texture.magFilter = NearestFilter;
+  texture.minFilter = NearestFilter;
+  texture.generateMipmaps = false;
+  texture.needsUpdate = true;
+  texture.flipY = false;
+
+  return { texture, regions };
+}
+
+function getSkyPalette(biome: LevelData['biome']): { zenith: string; horizon: string; glow: string } {
+  switch (biome) {
+    case 'barnyard':
+      return { zenith: '#0b1221', horizon: '#1f2a44', glow: 'rgba(244, 187, 120, 0.35)' };
+    case 'forest':
+      return { zenith: '#041822', horizon: '#123245', glow: 'rgba(74, 222, 128, 0.32)' };
+    case 'lab':
+    default:
+      return { zenith: '#0a1328', horizon: '#1d3f66', glow: 'rgba(96, 165, 250, 0.4)' };
+  }
+}
+
+function createHorizonTexture(biome: LevelData['biome']): CanvasTexture {
+  const canvas = document.createElement('canvas');
+  canvas.width = 512;
+  canvas.height = 256;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) {
+    throw new Error('Failed to create horizon texture');
+  }
+  const palette = getSkyPalette(biome);
+  const gradient = ctx.createLinearGradient(0, 0, 0, canvas.height);
+  gradient.addColorStop(0, palette.zenith);
+  gradient.addColorStop(0.65, palette.horizon);
+  gradient.addColorStop(1, 'rgba(4,7,15,0.0)');
+  ctx.fillStyle = gradient;
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+  ctx.globalCompositeOperation = 'lighter';
+  ctx.fillStyle = palette.glow;
+  ctx.beginPath();
+  ctx.ellipse(canvas.width / 2, canvas.height * 0.78, canvas.width * 0.42, canvas.height * 0.22, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.globalCompositeOperation = 'source-over';
+
+  const texture = new CanvasTexture(canvas);
+  texture.magFilter = NearestFilter;
+  texture.minFilter = NearestFilter;
+  texture.needsUpdate = true;
+  return texture;
 }
 
 function createFloorTexture(biome: LevelData['biome'], rng: () => number): CanvasTexture {
@@ -1907,6 +2626,10 @@ function mulberry32(seed: number): () => number {
   };
 }
 
+function nextPowerOfTwo(value: number): number {
+  return 2 ** Math.ceil(Math.log2(Math.max(1, value)));
+}
+
 function createChickenModel(primaryColor: number): Group {
   const group = new Group();
 
@@ -1977,6 +2700,18 @@ function createChickenModel(primaryColor: number): Group {
   group.add(rightEye);
 
   group.scale.setScalar(0.85);
+  group.userData.rig = {
+    leftWing,
+    rightWing,
+    head,
+    tail,
+    base: {
+      leftWingZ: leftWing.rotation.z,
+      rightWingZ: rightWing.rotation.z,
+      headX: head.rotation.x,
+      tailX: tail.rotation.x
+    }
+  } satisfies ChickenRig;
   return group;
 }
 
@@ -1991,15 +2726,127 @@ function applyChickenTint(model: Group, color: number): void {
 
 function createEnemyModel(kind: EnemyKind): Group {
   const group = new Group();
-  const baseColor = ENEMY_COLORS[kind];
-  const highlight: Record<EnemyKind, number> = {
+  const base = ENEMY_COLORS[kind];
+  const accentPalette: Record<EnemyKind, number> = {
     fox: 0xfbbf24,
     hawk: 0x93c5fd,
     snake: 0x4ade80,
     raccoon: 0xe2e8f0,
-    coyote: 0xfacc15
+    coyote: 0xfacc15,
+    weasel: 0xfda4af,
+    owl: 0xf5d0fe
   };
 
+  if (kind === 'weasel') {
+    const bodyMaterial = new MeshStandardMaterial({ color: base, roughness: 0.45, metalness: 0.18 });
+    const body = new Mesh(new CylinderGeometry(3.2, 2.4, 18, 8, 1, false), bodyMaterial);
+    body.position.y = 8;
+    group.add(body);
+
+    const head = new Mesh(new SphereGeometry(3.4, 10, 10), bodyMaterial.clone());
+    head.position.set(0, 14, 3.6);
+    group.add(head);
+
+    const snoutMaterial = new MeshStandardMaterial({ color: accentPalette.weasel, roughness: 0.35, metalness: 0.15 });
+    const snout = new Mesh(new ConeGeometry(1.6, 3.8, 6, 1), snoutMaterial);
+    snout.rotation.x = Math.PI / 2;
+    snout.position.set(0, 13, 6.5);
+    group.add(snout);
+
+    const tail = new Mesh(new ConeGeometry(1.4, 6, 6, 1), snoutMaterial.clone());
+    tail.rotation.z = Math.PI / 2.6;
+    tail.position.set(-4.6, 7, -6.5);
+    group.add(tail);
+
+    const clawMaterial = new MeshStandardMaterial({ color: 0xfee2e2, roughness: 0.25, metalness: 0.1 });
+    const claw = new Mesh(new ConeGeometry(0.9, 2.6, 6, 1), clawMaterial);
+    claw.rotation.x = Math.PI / 2;
+    claw.position.set(2.8, 3.2, 5); group.add(claw);
+    const clawMirror = claw.clone();
+    clawMirror.position.x = -claw.position.x;
+    group.add(clawMirror);
+
+    const eyeMaterial = new MeshStandardMaterial({ color: 0x111827, roughness: 0.4 });
+    const eyeGeometry = new SphereGeometry(0.7, 6, 6);
+    const leftEye = new Mesh(eyeGeometry, eyeMaterial);
+    leftEye.position.set(1.6, 13.3, 5.4);
+    group.add(leftEye);
+    const rightEye = leftEye.clone();
+    rightEye.position.x = -leftEye.position.x;
+    group.add(rightEye);
+
+    group.scale.setScalar(0.85);
+    group.userData.rig = {
+      tail,
+      base: { tailZ: tail.rotation.z }
+    } satisfies EnemyRig;
+    return group;
+  }
+
+  if (kind === 'owl') {
+    const bodyMaterial = new MeshStandardMaterial({ color: base, roughness: 0.4, metalness: 0.2 });
+    const body = new Mesh(new SphereGeometry(8.2, 16, 16), bodyMaterial);
+    body.position.y = 9;
+    group.add(body);
+
+    const wingMaterial = new MeshStandardMaterial({ color: accentPalette.owl, roughness: 0.5, metalness: 0.12 });
+    const wingGeometry = new ConeGeometry(4.5, 16, 12, 1, true);
+    const leftWing = new Mesh(wingGeometry, wingMaterial);
+    leftWing.rotation.z = Math.PI / 2.3;
+    leftWing.position.set(9, 9, 0);
+    group.add(leftWing);
+    const rightWing = leftWing.clone();
+    rightWing.rotation.z = -Math.PI / 2.3;
+    rightWing.position.x = -leftWing.position.x;
+    group.add(rightWing);
+
+    const headMaterial = new MeshStandardMaterial({ color: 0xfdf4ff, roughness: 0.35, metalness: 0.08 });
+    const head = new Mesh(new SphereGeometry(5, 14, 14), headMaterial);
+    head.position.set(0, 13, 4);
+    group.add(head);
+
+    const beakMaterial = new MeshStandardMaterial({ color: 0xfacc15, roughness: 0.45, metalness: 0.1 });
+    const beak = new Mesh(new ConeGeometry(2, 4, 6, 1), beakMaterial);
+    beak.rotation.x = Math.PI / 2;
+    beak.position.set(0, 11.5, 8.5);
+    group.add(beak);
+
+    const eyeMaterial = new MeshStandardMaterial({ color: 0x0f172a, roughness: 0.4, metalness: 0.2 });
+    const irisMaterial = new MeshStandardMaterial({ color: 0xfcd34d, roughness: 0.4, metalness: 0.1 });
+    const eyeGeo = new SphereGeometry(1.4, 10, 10);
+    const leftEye = new Mesh(eyeGeo, eyeMaterial);
+    leftEye.position.set(2.6, 12.6, 7.2);
+    group.add(leftEye);
+    const rightEye = leftEye.clone();
+    rightEye.position.x = -leftEye.position.x;
+    group.add(rightEye);
+    const leftIris = new Mesh(new SphereGeometry(0.7, 10, 10), irisMaterial);
+    leftIris.position.copy(leftEye.position).add(new Vector3(0, 0, 0.8));
+    group.add(leftIris);
+    const rightIris = leftIris.clone();
+    rightIris.position.x = -leftIris.position.x;
+    group.add(rightIris);
+
+    const talonMaterial = new MeshStandardMaterial({ color: 0xfde68a, roughness: 0.4, metalness: 0.15 });
+    const talon = new Mesh(new ConeGeometry(1.1, 4.2, 6, 1), talonMaterial);
+    talon.rotation.x = Math.PI / 2;
+    talon.position.set(2.5, 4.2, 3.6);
+    group.add(talon);
+    const talonMirror = talon.clone();
+    talonMirror.position.x = -talon.position.x;
+    group.add(talonMirror);
+
+    group.scale.setScalar(1.05);
+    group.userData.rig = {
+      leftWing,
+      rightWing,
+      base: { leftWingZ: leftWing.rotation.z, rightWingZ: rightWing.rotation.z }
+    } satisfies EnemyRig;
+    return group;
+  }
+
+  const baseColor = base;
+  const highlight = accentPalette[kind];
   const bodyMaterial = new MeshStandardMaterial({
     color: baseColor,
     roughness: 0.6,
@@ -2010,7 +2857,7 @@ function createEnemyModel(kind: EnemyKind): Group {
   group.add(body);
 
   const accentMaterial = new MeshStandardMaterial({
-    color: highlight[kind],
+    color: highlight,
     roughness: 0.5,
     metalness: 0.12
   });

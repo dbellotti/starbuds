@@ -14,7 +14,8 @@
     "typecheck": "npm run typecheck --workspaces --if-present",
     "replay:snapshots": "tsx scripts/replay-snapshots.ts",
     "smoke": "node scripts/smoke-test.mjs",
-    "perf:fps": "node scripts/perf-metrics.mjs"
+    "perf:fps": "node scripts/perf-metrics.mjs",
+    "telemetry:summary": "node scripts/telemetry-summary.mjs"
   },
   "devDependencies": {
     "@typescript-eslint/eslint-plugin": "^8.10.0",

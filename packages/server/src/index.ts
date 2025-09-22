@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { RawData, WebSocket, WebSocketServer } from 'ws';
 import {
   AUGMENT_POOL,
+  STACKABLE_AUGMENTS,
   ClientMessage,
   createInitialInputState,
   MAX_PLAYERS,
@@ -30,6 +31,11 @@ import {
   Vector2D,
   XpDropState,
   BASE_PLAYER_DAMAGE,
+  ARTIFACT_TTL,
+  LOOT_MAGNET_BASE_RADIUS,
+  LOOT_MAGNET_MAX_RADIUS,
+  LOOT_MAGNET_PULL_SPEED,
+  LOOT_MAGNET_RADIUS_STEP,
   ENEMY_ATTACK_COOLDOWN,
   ENEMY_ATTACK_DAMAGE,
   ENEMY_ATTACK_RANGE,
@@ -41,7 +47,8 @@ import {
   TILE_SIZE,
   AugmentId,
   getAugmentOption,
-  ProjectileFaction
+  ProjectileFaction,
+  ArtifactKind
 } from '@farsight/shared';
 
 const TICK_INTERVAL_MS = 1000 / TICK_RATE;
@@ -80,6 +87,13 @@ type PlayerSimState = PlayerState & {
   lastAugmentId: AugmentId | null;
   ready: boolean;
   lastPingTimestamp: number;
+  aimHeading: number;
+  lootMagnetRadius: number;
+  artifacts: ArtifactKind[];
+  artifactShieldTimer: number;
+  artifactShieldValue: number;
+  damageTaken: number;
+  xpCollected: number;
 };
 
 type EnemySimState = EnemyState & {
@@ -87,6 +101,10 @@ type EnemySimState = EnemyState & {
   switchTimer: number;
   attackCooldown: number;
   isBoss: boolean;
+  burrowTimer: number;
+  burrowed: boolean;
+  supportTimer: number;
+  channelTimer: number;
 };
 
 type ProjectileSimState = ProjectileState & {
@@ -98,6 +116,12 @@ type ProjectileSimState = ProjectileState & {
 };
 
 type XpDropSimState = XpDropState;
+type ArtifactDropSimState = {
+  id: string;
+  kind: ArtifactKind;
+  position: Vector2D;
+  age: number;
+};
 
 type WorldEvent =
   | { type: 'broadcast'; message: ServerMessage }
@@ -109,6 +133,7 @@ class GameWorld {
   enemies = new Map<string, EnemySimState>();
   projectiles = new Map<string, ProjectileSimState>();
   xpDrops = new Map<string, XpDropSimState>();
+  artifactDrops = new Map<string, ArtifactDropSimState>();
   readonly level: LevelData;
   private spawnCursor = 0;
   private enemySpawnAccumulator = 0;
@@ -125,6 +150,13 @@ class GameWorld {
   private extractionReady = false;
   private extractionCountdown: number | null = null;
   private extractionPosition: Vector2D | null = null;
+  private telemetryLogTimer = 0;
+  private readonly telemetry = {
+    damageTaken: new Map<string, number>(),
+    xpCollected: new Map<string, number>(),
+    augmentPicks: new Map<AugmentId, number>(),
+    artifactsPicked: new Map<ArtifactKind, number>()
+  };
 
   constructor() {
     this.level = generateLevel(LEVEL_CONFIG);
@@ -160,8 +192,17 @@ class GameWorld {
       augments: [],
       lastAugmentId: null,
       ready: false,
-      lastPingTimestamp: 0
+      lastPingTimestamp: 0,
+      aimHeading: 0,
+      lootMagnetLevel: 0,
+      lootMagnetRadius: LOOT_MAGNET_BASE_RADIUS * 0.6,
+      artifacts: [],
+      artifactShieldTimer: 0,
+      artifactShieldValue: 0,
+      damageTaken: 0,
+      xpCollected: 0
     };
+    this.recalcLootMagnet(player);
     this.players.set(id, player);
     return player;
   }
@@ -181,12 +222,25 @@ class GameWorld {
       player.velocity = velocity;
       player.position.x += velocity.x * deltaSeconds;
       player.position.y += velocity.y * deltaSeconds;
-      if (velocity.x !== 0 || velocity.y !== 0) {
-        player.facing = Math.atan2(velocity.y, velocity.x);
+      const aimHeading = Number.isFinite(player.input.aimHeading)
+        ? player.input.aimHeading
+        : player.input.aimDirection;
+      if (Number.isFinite(aimHeading)) {
+        player.aimHeading = aimHeading;
+        player.facing = aimHeading;
+      } else if (velocity.x !== 0 || velocity.y !== 0) {
+        player.aimHeading = Math.atan2(velocity.y, velocity.x);
+        player.facing = player.aimHeading;
       }
       player.primaryCooldown = Math.max(0, player.primaryCooldown - deltaSeconds);
       player.hurtTimer = Math.max(0, player.hurtTimer - deltaSeconds);
       player.invulnerableTimer = Math.max(0, player.invulnerableTimer - deltaSeconds);
+      if (player.artifactShieldTimer > 0) {
+        player.artifactShieldTimer = Math.max(0, player.artifactShieldTimer - deltaSeconds);
+        if (player.artifactShieldTimer === 0) {
+          player.artifactShieldValue = 0;
+        }
+      }
       if (player.input.primaryAbility && player.primaryCooldown <= 0) {
         this.firePrimary(player);
       }
@@ -196,7 +250,13 @@ class GameWorld {
     this.trySpawnMiniboss(deltaSeconds);
     this.updateProjectiles(deltaSeconds);
     this.updateXpDrops(deltaSeconds);
+    this.updateArtifacts(deltaSeconds);
     this.updateObjectives(deltaSeconds);
+    this.telemetryLogTimer += deltaSeconds;
+    if (this.telemetryLogTimer >= 45) {
+      this.telemetryLogTimer = 0;
+      this.emitTelemetry();
+    }
   }
 
   snapshot(): WorldSnapshot {
@@ -211,13 +271,15 @@ class GameWorld {
         psychicLevel: player.psychicLevel,
         maxHealth: player.maxHealth,
         health: player.health,
-      experience: player.experience,
-      experienceToNext: player.experienceToNext,
-      hurtTimer: player.hurtTimer,
-      invulnerableTimer: player.invulnerableTimer,
-      lastAugmentId: player.lastAugmentId,
-      augments: player.augments.slice(),
-      ready: player.ready
+        experience: player.experience,
+        experienceToNext: player.experienceToNext,
+        hurtTimer: player.hurtTimer,
+        invulnerableTimer: player.invulnerableTimer,
+        lastAugmentId: player.lastAugmentId,
+        augments: player.augments.slice(),
+        artifacts: player.artifacts.slice(),
+        lootMagnetLevel: player.lootMagnetLevel,
+        ready: player.ready
       })),
       enemies: Array.from(this.enemies.values()).map(({ wanderDirection: _wd, switchTimer: _st, attackCooldown: _ac, ...enemy }) => ({
         ...enemy
@@ -234,6 +296,12 @@ class GameWorld {
       xpDrops: Array.from(this.xpDrops.values()).map((drop) => ({
         id: drop.id,
         amount: drop.amount,
+        position: drop.position,
+        age: drop.age
+      })),
+      artifacts: Array.from(this.artifactDrops.values()).map((drop) => ({
+        id: drop.id,
+        kind: drop.kind,
         position: drop.position,
         age: drop.age
       })),
@@ -365,8 +433,8 @@ class GameWorld {
   }
 
   private spawnInitialEnemies(): void {
-    const kinds: EnemyKind[] = ['fox', 'snake', 'hawk', 'raccoon'];
-    const initialCount = 12;
+    const kinds: EnemyKind[] = ['fox', 'snake', 'hawk', 'raccoon', 'weasel', 'owl'];
+    const initialCount = 14;
     for (let i = 0; i < initialCount; i += 1) {
       const kind = kinds[i % kinds.length];
       this.spawnEnemy(kind);
@@ -381,14 +449,18 @@ class GameWorld {
       this.enemySpawnAccumulator = 0;
       const rollSeed = Math.random();
       let roll: EnemyKind;
-      if (rollSeed < 0.35) {
+      if (rollSeed < 0.28) {
         roll = 'fox';
-      } else if (rollSeed < 0.6) {
+      } else if (rollSeed < 0.48) {
         roll = 'snake';
-      } else if (rollSeed < 0.85) {
+      } else if (rollSeed < 0.68) {
         roll = 'hawk';
-      } else {
+      } else if (rollSeed < 0.82) {
+        roll = 'weasel';
+      } else if (rollSeed < 0.92) {
         roll = 'raccoon';
+      } else {
+        roll = 'owl';
       }
       this.spawnEnemy(roll);
     }
@@ -404,8 +476,46 @@ class GameWorld {
       }
 
       const target = this.pickEnemyTarget(enemy, players);
-      const isRanged = enemy.kind === 'raccoon';
+      const isSupport = enemy.kind === 'owl';
+      const isRanged = enemy.kind === 'raccoon' || isSupport;
+      const isBurrower = enemy.kind === 'weasel';
+      const isDiver = enemy.kind === 'hawk';
       const isBoss = enemy.isBoss;
+
+      if (isBurrower && enemy.burrowed) {
+        enemy.intent = 'burrow';
+        enemy.velocity.x = 0;
+        enemy.velocity.y = 0;
+        enemy.burrowTimer -= deltaSeconds;
+        if (enemy.burrowTimer <= 0) {
+          enemy.burrowed = false;
+          enemy.intent = 'idle';
+          if (target) {
+            const dx = target.position.x - enemy.position.x;
+            const dy = target.position.y - enemy.position.y;
+            const angle = Math.atan2(dy, dx);
+            const emergeDistance = Math.min(enemy.attackRange * 0.85, 68);
+            enemy.position.x = target.position.x - Math.cos(angle) * emergeDistance;
+            enemy.position.y = target.position.y - Math.sin(angle) * emergeDistance;
+          }
+          enemy.attackCooldown = Math.min(enemy.attackCooldown, 0.2);
+          enemy.switchTimer = 0.25;
+        } else {
+          clampToLevel(enemy.position, this.level);
+          continue;
+        }
+      }
+
+      if (isSupport && enemy.intent === 'idle') {
+        enemy.supportTimer -= deltaSeconds;
+        if (enemy.supportTimer <= 0) {
+          enemy.intent = 'channel';
+          enemy.intentDuration = 1.6;
+          enemy.intentTimer = enemy.intentDuration;
+          enemy.channelTimer = enemy.intentDuration;
+          enemy.wanderDirection = { x: 0, y: 0 };
+        }
+      }
 
       if (enemy.intent === 'windup') {
         enemy.velocity.x = 0;
@@ -423,6 +533,16 @@ class GameWorld {
           enemy.intentDuration = 0;
           enemy.targetPlayerId = null;
         }
+      } else if (enemy.intent === 'channel') {
+        enemy.velocity.x = 0;
+        enemy.velocity.y = 0;
+        if (enemy.intentTimer <= 0) {
+          this.applyOwlSupport(enemy, players);
+          enemy.intent = 'recover';
+          enemy.intentDuration = 1.05;
+          enemy.intentTimer = enemy.intentDuration;
+          enemy.supportTimer = 6 + Math.random() * 3.5;
+        }
       } else {
         if (enemy.switchTimer <= 0) {
           if (isRanged && target) {
@@ -433,6 +553,12 @@ class GameWorld {
             const dir = Math.random() < 0.5 ? strafe : { x: -strafe.x, y: -strafe.y };
             enemy.wanderDirection = dir;
             enemy.switchTimer = 0.75 + Math.random() * 0.45;
+          } else if (isDiver && target) {
+            const dx = target.position.x - enemy.position.x;
+            const dy = target.position.y - enemy.position.y;
+            const length = Math.hypot(dx, dy) || 1;
+            enemy.wanderDirection = { x: dx / length, y: dy / length };
+            enemy.switchTimer = 0.55 + Math.random() * 0.4;
           } else {
             const base = (isBoss ? 1.1 : 1.5) + Math.random() * (isBoss ? 1.2 : 2);
             enemy.switchTimer = base;
@@ -444,7 +570,7 @@ class GameWorld {
           const dx = target.position.x - enemy.position.x;
           const dy = target.position.y - enemy.position.y;
           const distance = Math.hypot(dx, dy);
-          if (enemy.attackCooldown <= 0 && distance <= enemy.attackRange) {
+          if (enemy.kind !== 'owl' && enemy.attackCooldown <= 0 && distance <= enemy.attackRange) {
             this.beginEnemyWindup(enemy, target);
           } else if (isRanged) {
             const length = distance || 1;
@@ -464,7 +590,7 @@ class GameWorld {
 
       const speed = getEnemySpeed(enemy.kind);
       let speedScale = 1;
-      if (enemy.intent === 'windup') {
+      if (enemy.intent === 'windup' || enemy.intent === 'channel') {
         speedScale = 0;
       } else if (enemy.intent === 'recover') {
         speedScale = isBoss ? 0.55 : 0.4;
@@ -586,6 +712,24 @@ class GameWorld {
       }
       return;
     }
+    if (enemy.kind === 'owl') {
+      this.applyOwlSupport(enemy, players);
+      return;
+    }
+
+    if (enemy.kind === 'hawk') {
+      const focus = target ?? (enemy.targetPlayerId ? this.players.get(enemy.targetPlayerId) ?? null : null);
+      if (focus) {
+        const dx = focus.position.x - enemy.position.x;
+        const dy = focus.position.y - enemy.position.y;
+        const distance = Math.hypot(dx, dy) || 1;
+        const diveDistance = Math.min(distance, enemy.attackRange * 1.05);
+        enemy.position.x += (dx / distance) * diveDistance;
+        enemy.position.y += (dy / distance) * diveDistance;
+        this.damagePlayer(focus, Math.round(getEnemyAttackDamage('hawk') * 1.25), enemy.position, 96);
+      }
+      return;
+    }
 
     const range = enemy.attackRange;
     const damage = getEnemyAttackDamage(enemy.kind);
@@ -599,8 +743,40 @@ class GameWorld {
       }
     }
 
+    if (enemy.kind === 'weasel') {
+      enemy.burrowed = true;
+      enemy.burrowTimer = 2 + Math.random() * 1.8;
+      enemy.intent = 'burrow';
+    }
+
     if (enemy.isBoss) {
       this.spawnBossShockwave(enemy);
+    }
+  }
+
+  private applyOwlSupport(enemy: EnemySimState, players: PlayerSimState[]): void {
+    const radiusSq = enemy.attackRange * enemy.attackRange;
+    let boosted = 0;
+    for (const ally of this.enemies.values()) {
+      if (ally.id === enemy.id || ally.burrowed) {
+        continue;
+      }
+      const dx = ally.position.x - enemy.position.x;
+      const dy = ally.position.y - enemy.position.y;
+      if (dx * dx + dy * dy <= radiusSq) {
+        ally.attackCooldown = Math.max(0, ally.attackCooldown - 0.9);
+        if (ally.health < ally.maxHealth) {
+          ally.health = Math.min(ally.maxHealth, ally.health + 10);
+        }
+        boosted += 1;
+      }
+    }
+
+    if (boosted > 0) {
+      const focus = this.pickEnemyTarget(enemy, players);
+      if (focus) {
+        this.damagePlayer(focus, 6 + boosted * 2, enemy.position, 18);
+      }
     }
   }
 
@@ -608,9 +784,21 @@ class GameWorld {
     if (player.invulnerableTimer > 0) {
       return;
     }
-    player.health = Math.max(0, player.health - amount);
+    let remaining = amount;
+    if (player.artifactShieldTimer > 0 && player.artifactShieldValue > 0) {
+      const absorbed = Math.min(player.artifactShieldValue, remaining);
+      player.artifactShieldValue -= absorbed;
+      remaining -= absorbed;
+    }
+    if (remaining <= 0) {
+      player.hurtTimer = Math.max(player.hurtTimer, PLAYER_HURT_FLASH_TIME * 0.4);
+      return;
+    }
+    player.health = Math.max(0, player.health - remaining);
     player.hurtTimer = Math.max(player.hurtTimer, PLAYER_HURT_FLASH_TIME);
     player.invulnerableTimer = Math.max(player.invulnerableTimer, PLAYER_INVULNERABILITY_TIME);
+    player.damageTaken += remaining;
+    this.bumpTelemetry(player.id, 'damageTaken', remaining);
 
     const dx = player.position.x - origin.x;
     const dy = player.position.y - origin.y;
@@ -657,6 +845,18 @@ class GameWorld {
     enemy.intentDuration = 0;
     enemy.attackRange = getEnemyAttackRange(kind);
     enemy.targetPlayerId = null;
+    enemy.burrowed = false;
+    enemy.burrowTimer = 0;
+    enemy.supportTimer = 2 + Math.random() * 3;
+    enemy.channelTimer = 0;
+    if (kind === 'weasel') {
+      enemy.burrowed = true;
+      enemy.burrowTimer = 1.8 + Math.random() * 1.6;
+      enemy.intent = 'burrow';
+    }
+    if (kind === 'owl') {
+      enemy.supportTimer = 3 + Math.random() * 3;
+    }
     this.enemies.set(enemy.id, enemy);
     return enemy;
   }
@@ -681,7 +881,11 @@ class GameWorld {
       wanderDirection: { x: 0, y: 0 },
       switchTimer: 0,
       attackCooldown: 0,
-      isBoss: false
+      isBoss: false,
+      burrowTimer: 0,
+      burrowed: false,
+      supportTimer: 0,
+      channelTimer: 0
     };
   }
 
@@ -693,7 +897,7 @@ class GameWorld {
   }
 
   private firePrimary(player: PlayerSimState): void {
-    const angle = player.input.aimDirection;
+    const angle = Number.isFinite(player.aimHeading) ? player.aimHeading : player.input.aimDirection;
     const dirX = Math.cos(angle);
     const dirY = Math.sin(angle);
     const originX = player.position.x + dirX * (PROJECTILE_RADIUS * 0.7);
@@ -762,6 +966,9 @@ class GameWorld {
 
       if (projectile.faction === 'player') {
         for (const enemy of this.enemies.values()) {
+          if (enemy.burrowed) {
+            continue;
+          }
           const dx = enemy.position.x - projectile.position.x;
           const dy = enemy.position.y - projectile.position.y;
           if (dx * dx + dy * dy <= radiusSq) {
@@ -874,14 +1081,42 @@ class GameWorld {
     const collected: string[] = [];
     for (const drop of this.xpDrops.values()) {
       drop.age += deltaSeconds;
+      let collectedBy: PlayerSimState | null = null;
+      let magnetTarget: PlayerSimState | null = null;
+      let magnetDistanceSq = Number.POSITIVE_INFINITY;
+
       for (const player of this.players.values()) {
         const dx = player.position.x - drop.position.x;
         const dy = player.position.y - drop.position.y;
-        if (dx * dx + dy * dy <= (TILE_SIZE * 0.6) ** 2) {
-          this.grantExperience(player, drop.amount);
-          collected.push(drop.id);
+        const distanceSq = dx * dx + dy * dy;
+        const collectRadius = TILE_SIZE * (player.lootMagnetLevel > 0 ? 0.75 : 0.6);
+        if (distanceSq <= collectRadius * collectRadius) {
+          collectedBy = player;
           break;
         }
+        if (player.lootMagnetRadius > 0) {
+          const magnetRadiusSq = player.lootMagnetRadius * player.lootMagnetRadius;
+          if (distanceSq <= magnetRadiusSq && distanceSq < magnetDistanceSq) {
+            magnetDistanceSq = distanceSq;
+            magnetTarget = player;
+          }
+        }
+      }
+
+      if (collectedBy) {
+        this.grantExperience(collectedBy, drop.amount);
+        collected.push(drop.id);
+        continue;
+      }
+
+      if (magnetTarget && magnetDistanceSq < Number.POSITIVE_INFINITY) {
+        const distance = Math.sqrt(magnetDistanceSq) || 1;
+        const pull = LOOT_MAGNET_PULL_SPEED * (0.85 + magnetTarget.lootMagnetLevel * 0.2);
+        const step = Math.min(distance, pull * deltaSeconds);
+        const dirX = (magnetTarget.position.x - drop.position.x) / distance;
+        const dirY = (magnetTarget.position.y - drop.position.y) / distance;
+        drop.position.x += dirX * step;
+        drop.position.y += dirY * step;
       }
     }
 
@@ -894,6 +1129,123 @@ class GameWorld {
         this.xpDrops.delete(id);
       }
     }
+  }
+
+  private updateArtifacts(deltaSeconds: number): void {
+    const collected: string[] = [];
+    for (const drop of this.artifactDrops.values()) {
+      drop.age += deltaSeconds;
+      for (const player of this.players.values()) {
+        const dx = player.position.x - drop.position.x;
+        const dy = player.position.y - drop.position.y;
+        if (dx * dx + dy * dy <= (TILE_SIZE * 0.8) ** 2) {
+          this.grantArtifact(player, drop.kind);
+          collected.push(drop.id);
+          break;
+        }
+      }
+    }
+
+    for (const id of collected) {
+      this.artifactDrops.delete(id);
+    }
+
+    for (const [id, drop] of this.artifactDrops.entries()) {
+      if (drop.age > ARTIFACT_TTL) {
+        this.artifactDrops.delete(id);
+      }
+    }
+  }
+
+  private spawnArtifactDrop(center: Vector2D, angle: number, distance: number, kind: ArtifactKind): void {
+    const id = randomUUID();
+    const position = {
+      x: center.x + Math.cos(angle) * distance,
+      y: center.y + Math.sin(angle) * distance
+    };
+    this.artifactDrops.set(id, {
+      id,
+      kind,
+      position,
+      age: 0
+    });
+  }
+
+  private grantArtifact(player: PlayerSimState, kind: ArtifactKind): void {
+    const existing = player.artifacts.filter((entry) => entry === kind).length;
+    player.artifacts.push(kind);
+    switch (kind) {
+      case 'damage-core': {
+        player.damageMultiplier *= 1.12;
+        break;
+      }
+      case 'haste-spur': {
+        player.cooldownMultiplier *= 0.9;
+        player.projectileSpeedMultiplier *= 1.1;
+        player.primaryCooldown = Math.min(
+          player.primaryCooldown,
+          PROJECTILE_COOLDOWN * player.cooldownMultiplier
+        );
+        break;
+      }
+      case 'ward-feather': {
+        player.maxHealth = Math.round(player.maxHealth * 1.08);
+        player.health = Math.min(player.maxHealth, player.health + Math.round(player.maxHealth * 0.25));
+        player.artifactShieldValue += 40 + existing * 20;
+        player.artifactShieldTimer = Math.max(player.artifactShieldTimer, 12);
+        break;
+      }
+      default:
+        assertNever(kind as never);
+    }
+    this.noteArtifactPickup(kind);
+  }
+
+  private recalcLootMagnet(player: PlayerSimState): void {
+    const passiveRadius = LOOT_MAGNET_BASE_RADIUS * 0.6;
+    if (player.lootMagnetLevel <= 0) {
+      player.lootMagnetRadius = passiveRadius;
+      return;
+    }
+    const base = LOOT_MAGNET_BASE_RADIUS;
+    const bonus = LOOT_MAGNET_RADIUS_STEP * Math.max(0, player.lootMagnetLevel - 1);
+    player.lootMagnetRadius = Math.min(LOOT_MAGNET_MAX_RADIUS, base + bonus);
+  }
+
+  private bumpTelemetry(playerId: string, field: 'damageTaken' | 'xpCollected', amount: number): void {
+    const bucket = this.telemetry[field];
+    bucket.set(playerId, (bucket.get(playerId) ?? 0) + amount);
+  }
+
+  private noteAugmentPick(id: AugmentId): void {
+    this.telemetry.augmentPicks.set(id, (this.telemetry.augmentPicks.get(id) ?? 0) + 1);
+  }
+
+  private noteArtifactPickup(kind: ArtifactKind): void {
+    this.telemetry.artifactsPicked.set(kind, (this.telemetry.artifactsPicked.get(kind) ?? 0) + 1);
+  }
+
+  private emitTelemetry(): void {
+    if (
+      this.telemetry.damageTaken.size === 0 &&
+      this.telemetry.xpCollected.size === 0 &&
+      this.telemetry.augmentPicks.size === 0 &&
+      this.telemetry.artifactsPicked.size === 0
+    ) {
+      return;
+    }
+    const snapshot = {
+      wave: this.waveNumber,
+      damageTaken: Array.from(this.telemetry.damageTaken.entries()),
+      xpCollected: Array.from(this.telemetry.xpCollected.entries()),
+      augmentPicks: Array.from(this.telemetry.augmentPicks.entries()),
+      artifactPicks: Array.from(this.telemetry.artifactsPicked.entries())
+    };
+    console.log('[telemetry]', JSON.stringify(snapshot));
+    this.telemetry.damageTaken.clear();
+    this.telemetry.xpCollected.clear();
+    this.telemetry.augmentPicks.clear();
+    this.telemetry.artifactsPicked.clear();
   }
 
   private recordEnemyKill(enemy: EnemySimState): void {
@@ -928,6 +1280,12 @@ class GameWorld {
           y: enemy.position.y + Math.sin(angle) * offset
         };
         this.spawnXpDrop(dropPosition, Math.round(baseAmount / slices));
+      }
+      const artifactKinds: ArtifactKind[] = ['damage-core', 'haste-spur', 'ward-feather'];
+      for (let i = 0; i < artifactKinds.length; i += 1) {
+        const angle = (Math.PI * 2 * i) / artifactKinds.length + Math.random() * 0.4;
+        const distance = 38 + Math.random() * 18;
+        this.spawnArtifactDrop(enemy.position, angle, distance, artifactKinds[i]);
       }
     } else {
       this.spawnXpDrop(enemy.position, baseAmount);
@@ -966,6 +1324,8 @@ class GameWorld {
 
   private grantExperience(player: PlayerSimState, amount: number): void {
     player.experience += amount;
+    player.xpCollected += amount;
+    this.bumpTelemetry(player.id, 'xpCollected', amount);
     while (player.experience >= player.experienceToNext) {
       player.experience -= player.experienceToNext;
       player.psychicLevel += 1;
@@ -1006,12 +1366,18 @@ class GameWorld {
       pool[i] = pool[j];
       pool[j] = temp;
     }
-    const taken = new Set(player.augments);
-    const allowDuplicates = taken.size >= AUGMENT_POOL.length - 1;
+    const taken = new Set<AugmentId>();
+    for (const id of player.augments) {
+      if (!STACKABLE_AUGMENTS.has(id)) {
+        taken.add(id);
+      }
+    }
+    const nonStackableCount = AUGMENT_POOL.filter((id) => !STACKABLE_AUGMENTS.has(id)).length;
+    const allowDuplicates = taken.size >= Math.max(0, nonStackableCount - 1);
     const desired = player.psychicLevel <= 2 ? Math.min(2, AUGMENT_POOL.length) : Math.min(3, AUGMENT_POOL.length);
     const options: AugmentId[] = [];
     for (const id of pool) {
-      if (!taken.has(id) || allowDuplicates) {
+      if (STACKABLE_AUGMENTS.has(id) || !taken.has(id) || allowDuplicates) {
         options.push(id);
       }
       if (options.length >= desired) {
@@ -1047,9 +1413,16 @@ class GameWorld {
         player.splitShots = Math.min(player.splitShots + 1, 2);
         break;
       }
+      case 'foraging-aura': {
+        player.lootMagnetLevel += 1;
+        this.recalcLootMagnet(player);
+        break;
+      }
       default:
         assertNever(augmentId as never);
     }
+
+    this.noteAugmentPick(augmentId);
 
     this.events.push({
       type: 'broadcast',
@@ -1161,6 +1534,9 @@ function handleClientMessage(context: ClientContext, raw: RawData): void {
       if (!player) {
         return;
       }
+      if (!Number.isFinite(message.state.aimHeading)) {
+        message.state.aimHeading = message.state.aimDirection;
+      }
       player.input = message.state;
       break;
     }
@@ -1236,13 +1612,17 @@ function getEnemySpeed(kind: EnemyKind): number {
     case 'fox':
       return 85;
     case 'hawk':
-      return 130;
+      return 150;
     case 'snake':
       return 55;
     case 'raccoon':
       return 70;
     case 'coyote':
       return 65;
+    case 'weasel':
+      return 120;
+    case 'owl':
+      return 60;
     default:
       return 70;
   }
@@ -1260,6 +1640,10 @@ function getEnemyMaxHealth(kind: EnemyKind): number {
       return 60;
     case 'coyote':
       return 420;
+    case 'weasel':
+      return 58;
+    case 'owl':
+      return 110;
     default:
       return 30;
   }

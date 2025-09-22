@@ -101,6 +101,32 @@ canvas {
   z-index: 2;
 }
 
+.hud-build {
+  margin-top: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 9px;
+  color: rgba(226, 232, 240, 0.85);
+  letter-spacing: 0.7px;
+  text-transform: uppercase;
+}
+
+.hud-build-augments,
+.hud-build-artifacts,
+.hud-build-magnet {
+  display: block;
+  opacity: 0.9;
+}
+
+.hud-build-artifacts {
+  color: rgba(147, 197, 253, 0.9);
+}
+
+.hud-build-magnet {
+  color: rgba(250, 204, 21, 0.88);
+}
+
 .hud-team {
   position: absolute;
   top: 24px;
@@ -572,6 +598,57 @@ canvas {
   border-color: rgba(248, 113, 113, 0.65);
   box-shadow: 0 0 18px rgba(248, 113, 113, 0.25);
   color: #fee2e2;
+}
+
+.hud-toast.is-artifact-local {
+  border-color: rgba(250, 204, 21, 0.65);
+  box-shadow: 0 0 16px rgba(250, 204, 21, 0.3);
+  color: #fef9c3;
+}
+
+.hud-toast.is-artifact-ally {
+  border-color: rgba(129, 140, 248, 0.55);
+  box-shadow: 0 0 16px rgba(129, 140, 248, 0.25);
+  color: #ede9fe;
+}
+
+.hud-boss-banner {
+  position: absolute;
+  top: 20px;
+  left: 50%;
+  transform: translate(-50%, -22px);
+  padding: 12px 24px;
+  border-radius: 12px;
+  border: 1px solid rgba(248, 113, 113, 0.45);
+  background: rgba(15, 23, 42, 0.92);
+  color: #f8fafc;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.18s ease, transform 0.18s ease;
+  z-index: 4;
+  letter-spacing: 1px;
+}
+
+.hud-boss-banner.is-visible {
+  opacity: 1;
+  transform: translate(-50%, 0);
+}
+
+.hud-boss-headline {
+  font-size: 11px;
+  text-transform: uppercase;
+  color: #f87171;
+}
+
+.hud-boss-detail {
+  font-size: 13px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 1.4px;
 }
 
 @keyframes hud-warning-pulse {
