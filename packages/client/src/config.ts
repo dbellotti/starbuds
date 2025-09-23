@@ -3,7 +3,8 @@ const DEFAULT_ORIGIN = `ws://localhost:${DEFAULT_PORT}`;
 
 export function getServerUrl(): string {
   const rawOrigin = resolveOrigin();
-  const rawPath = import.meta.env.VITE_SERVER_PATH ?? '/';
+  const envPathValue = import.meta.env.VITE_SERVER_PATH as unknown;
+  const rawPath = typeof envPathValue === 'string' && envPathValue.trim().length > 0 ? envPathValue : '/';
 
   try {
     const url = new URL(rawPath, normaliseOrigin(rawOrigin));
@@ -21,9 +22,9 @@ export function getServerUrl(): string {
 }
 
 function resolveOrigin(): string {
-  const envOrigin = import.meta.env.VITE_SERVER_ORIGIN;
-  if (typeof envOrigin === 'string' && envOrigin.trim().length > 0) {
-    return envOrigin.trim();
+  const envOriginValue = import.meta.env.VITE_SERVER_ORIGIN as unknown;
+  if (typeof envOriginValue === 'string' && envOriginValue.trim().length > 0) {
+    return envOriginValue.trim();
   }
 
   if (typeof window !== 'undefined') {
@@ -37,9 +38,9 @@ function resolveOrigin(): string {
 }
 
 function resolvePort(): string | null {
-  const envPort = import.meta.env.VITE_SERVER_PORT;
-  if (typeof envPort === 'string' && envPort.trim().length > 0) {
-    return envPort.trim();
+  const envPortValue = import.meta.env.VITE_SERVER_PORT as unknown;
+  if (typeof envPortValue === 'string' && envPortValue.trim().length > 0) {
+    return envPortValue.trim();
   }
   return DEFAULT_PORT;
 }

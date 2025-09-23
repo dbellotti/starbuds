@@ -1,4 +1,5 @@
-import { PlayerInputButton, PlayerInputState, createInitialInputState } from '@farsight/shared';
+import { createInitialInputState } from '@farsight/shared';
+import type { PlayerInputButton, PlayerInputState } from '@farsight/shared';
 
 const KEY_BINDINGS: Record<string, PlayerInputButton> = {
   KeyW: 'moveUp',

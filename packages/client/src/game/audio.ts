@@ -8,6 +8,8 @@ export interface AudioController {
   playExtractionAbort(): void;
   playExtractionComplete(): void;
   playMutatorChime(): void;
+  playArmoryHover(): void;
+  playArmoryEquip(): void;
   setIntensity(level: number): void;
   setPhase(phase: GamePhase): void;
   dispose(): void;
@@ -213,6 +215,13 @@ export function createAudioController(): AudioController {
     playMutatorChime(): void {
       playTone(720, 0.2, 'triangle', 0.1);
       window.setTimeout(() => playTone(540, 0.18, 'sawtooth', 0.08), 140);
+    },
+    playArmoryHover(): void {
+      playTone(560, 0.16, 'triangle', 0.08);
+    },
+    playArmoryEquip(): void {
+      playSweep(260, 520, 0.26, 0.12);
+      window.setTimeout(() => playTone(820, 0.14, 'sine', 0.08), 80);
     },
     setIntensity(level: number): void {
       targetIntensity = Math.max(0, Math.min(level, 1));

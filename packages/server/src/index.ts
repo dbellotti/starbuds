@@ -1,65 +1,66 @@
-import { createServer } from 'node:http';
 import { randomUUID } from 'node:crypto';
-import { RawData, WebSocket, WebSocketServer } from 'ws';
+import { createServer } from 'node:http';
+import { WebSocket, WebSocketServer, type RawData } from 'ws';
+
 import {
-  AUGMENT_POOL,
-  STACKABLE_AUGMENTS,
-  ClientMessage,
-  createInitialInputState,
-  MAX_PLAYERS,
-  NETWORK_PROTOCOL_VERSION,
-  ObjectiveState,
-  PlayerInputState,
-  PlayerState,
-  PlayerSummary,
-  PROJECTILE_COOLDOWN,
-  PROJECTILE_LIFETIME,
-  PROJECTILE_RADIUS,
-  PROJECTILE_SPEED,
-  PLAYER_HURT_FLASH_TIME,
-  PLAYER_INVULNERABILITY_TIME,
-  QuickPingBroadcastMessage,
-  QuickPingKind,
-  QuickPingMessage,
-  RosterEntry,
-  ServerMessage,
-  TICK_RATE,
-  WorldSnapshot,
-  EnemyKind,
-  EnemyState,
-  ProjectileState,
-  Vector2D,
-  XpDropState,
-  BASE_PLAYER_DAMAGE,
   ARTIFACT_TTL,
-  LOOT_MAGNET_BASE_RADIUS,
-  LOOT_MAGNET_MAX_RADIUS,
-  LOOT_MAGNET_PULL_SPEED,
-  LOOT_MAGNET_RADIUS_STEP,
+  AUGMENT_POOL,
+  BASE_PLAYER_DAMAGE,
   ENEMY_ATTACK_COOLDOWN,
   ENEMY_ATTACK_DAMAGE,
   ENEMY_ATTACK_RANGE,
   ENEMY_ATTACK_RECOVERY,
   ENEMY_ATTACK_WINDUP,
   ENEMY_XP_VALUES,
-  generateLevel,
-  LevelData,
+  LOOT_MAGNET_BASE_RADIUS,
+  LOOT_MAGNET_MAX_RADIUS,
+  LOOT_MAGNET_PULL_SPEED,
+  LOOT_MAGNET_RADIUS_STEP,
+  MAX_PLAYERS,
+  NETWORK_PROTOCOL_VERSION,
+  PLAYER_HURT_FLASH_TIME,
+  PLAYER_INVULNERABILITY_TIME,
+  PROJECTILE_COOLDOWN,
+  PROJECTILE_LIFETIME,
+  PROJECTILE_RADIUS,
+  PROJECTILE_SPEED,
+  STACKABLE_AUGMENTS,
   TILE_SIZE,
-  AugmentId,
-  getAugmentOption,
-  ProjectileFaction,
-  ArtifactKind,
-  ArmoryState,
-  ArmoryItem,
-  GamePhase,
+  TICK_RATE,
+  createInitialInputState,
+  generateLevel,
+  getAugmentOption
+} from '@farsight/shared';
+import type {
   ActiveMutators,
-  ReadyContext,
-  MutatorCadence,
-  PlayerArmoryState,
+  ArmoryItem,
+  ArmoryState,
+  ArtifactKind,
+  AugmentId,
+  ClientMessage,
   EntityDelta,
-  WorldSnapshotDelta,
+  EnemyKind,
+  EnemyState,
+  GamePhase,
+  LevelData,
+  MutatorCadence,
+  ObjectiveState,
+  PlayerArmoryState,
+  PlayerInputState,
+  PlayerState,
+  PlayerSummary,
+  ProjectileFaction,
+  ProjectileState,
+  QuickPingBroadcastMessage,
+  QuickPingKind,
+  RosterEntry,
   RunSummary,
-  RunSummaryPlayer
+  RunSummaryPlayer,
+  ServerMessage,
+  Vector2D,
+  WorldSnapshot,
+  WorldSnapshotDelta,
+  XpDropState
 } from '@farsight/shared';
 
 const TICK_INTERVAL_MS = 1000 / TICK_RATE;
@@ -751,9 +752,13 @@ class GameWorld {
         lootMagnetLevel: player.lootMagnetLevel,
         ready: player.ready
       })),
-      enemies: Array.from(this.enemies.values()).map(({ wanderDirection: _wd, switchTimer: _st, attackCooldown: _ac, ...enemy }) => ({
-        ...enemy
-      })),
+      enemies: Array.from(this.enemies.values()).map((enemy) => {
+        const copy = { ...enemy };
+        delete (copy as Partial<typeof copy>).wanderDirection;
+        delete (copy as Partial<typeof copy>).switchTimer;
+        delete (copy as Partial<typeof copy>).attackCooldown;
+        return copy;
+      }),
       projectiles: Array.from(this.projectiles.values()).map((projectile) => ({
         id: projectile.id,
         ownerId: projectile.ownerId,
@@ -1786,7 +1791,7 @@ class GameWorld {
         break;
       }
       default:
-        assertNever(kind as never);
+        assertNever(kind);
     }
     this.noteArtifactPickup(kind);
   }
@@ -2013,7 +2018,7 @@ class GameWorld {
         break;
       }
       default:
-        assertNever(augmentId as never);
+        assertNever(augmentId);
     }
 
     this.noteAugmentPick(augmentId);
@@ -2030,10 +2035,10 @@ class GameWorld {
   }
 }
 
-let world = new GameWorld();
+const world = new GameWorld();
 const armory = new ArmoryManager();
 let sessionPhase: GamePhase = 'combat';
-let runNumber = 1;
+let runNumber = 0;
 let pausedForArmory = false;
 let latestSnapshot: WorldSnapshot | null = null;
 let lastFullSnapshotTick = 0;
@@ -2048,6 +2053,8 @@ interface ClientContext {
 }
 
 const clients = new Map<WebSocket, ClientContext>();
+
+enterArmoryStage();
 
 const httpServer = createServer((_, res) => {
   res.writeHead(200, { 'Content-Type': 'text/plain' });
@@ -2452,7 +2459,18 @@ function sendToPlayerId(playerId: string, message: ServerMessage): void {
 
 function parseClientMessage(raw: RawData): ClientMessage | null {
   try {
-    const data = typeof raw === 'string' ? raw : raw.toString('utf-8');
+    let data: string;
+    if (typeof raw === 'string') {
+      data = raw;
+    } else if (raw instanceof Buffer) {
+      data = raw.toString('utf-8');
+    } else if (Array.isArray(raw)) {
+      data = Buffer.concat(raw).toString('utf-8');
+    } else if (raw instanceof ArrayBuffer) {
+      data = Buffer.from(new Uint8Array(raw)).toString('utf-8');
+    } else {
+      data = Buffer.from(raw).toString('utf-8');
+    }
     return JSON.parse(data) as ClientMessage;
   } catch (error) {
     console.warn('Failed to parse client message', error);
@@ -2496,14 +2514,14 @@ function maybeAdvanceFromSummary(): void {
   if (sessionPhase !== 'summary') {
     return;
   }
-  let activePlayers = 0;
   for (const player of world.players.values()) {
-    activePlayers += 1;
     if (!summaryAcknowledgements.has(player.id)) {
       return;
     }
   }
-  enterArmoryStage();
+  if (world.players.size > 0) {
+    enterArmoryStage();
+  }
 }
 
 function enterArmoryStage(): void {

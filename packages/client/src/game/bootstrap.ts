@@ -36,8 +36,8 @@ import {
   Vector3,
   WebGLRenderer
 } from 'three';
+
 import type {
-  ArmoryState,
   ArtifactKind,
   EnemyKind,
   EnemyState,
@@ -52,12 +52,15 @@ import type {
 } from '@farsight/shared';
 import { createInitialInputState } from '@farsight/shared';
 import { ARTIFACT_TTL, PLAYER_HURT_FLASH_TIME, PROJECTILE_LIFETIME, TILE_SIZE, TICK_RATE } from '@farsight/shared';
+
+import { applyChickenTint, createChickenModel } from './armoryAssets';
+import type { ChickenRig } from './armoryAssets';
+import { createAudioController } from './audio';
+import { createDebugOverlay } from './debugOverlay';
+import { createHud } from './hud';
 import { InputController } from './input';
 import { GameNetwork } from './network';
-import { createHud } from './hud';
-import { createDebugOverlay } from './debugOverlay';
 import { getServerUrl } from '../config';
-import { createAudioController } from './audio';
 
 const DESIGN_WORLD_UNITS = 480;
 const PLAYER_HEIGHT = 2;
@@ -105,6 +108,7 @@ export async function bootstrapGame(): Promise<void> {
   const camera = createCamera(new Vector2(window.innerWidth, window.innerHeight));
   const worldRenderer = new WorldRenderer(scene);
   const network = new GameNetwork();
+  const audio = createAudioController();
   const hud = createHud(mountNode, {
     onReadyChange: (ready, context) => {
       network.setReady(ready, context);
@@ -120,10 +124,10 @@ export async function bootstrapGame(): Promise<void> {
     },
     onSummaryAcknowledge: () => {
       network.acknowledgeSummary();
-    }
+    },
+    audio
   });
   const debug = createDebugOverlay(mountNode);
-  const audio = createAudioController();
   debug.updateCameraMode('Top');
 
   const ambientLight = new AmbientLight(0x1b2536, 0.58);
@@ -143,9 +147,7 @@ export async function bootstrapGame(): Promise<void> {
   handleResize(renderer, camera);
 
   const pointerWorld = new Vector2();
-  let playerId: string | null = null;
   let currentPhase: GamePhase = 'combat';
-  let liveArmoryState: ArmoryState | null = null;
   let pointerClientX = window.innerWidth / 2;
   let pointerClientY = window.innerHeight / 2;
   let inputInterval: number | null = null;
@@ -255,7 +257,6 @@ export async function bootstrapGame(): Promise<void> {
     worldRenderer.spawnPing(message.position.x, message.position.y, message.kind, isLocal);
   });
   const detachArmory = network.onArmoryState((state) => {
-    liveArmoryState = state;
     currentPhase = state.phase;
     hud.updateArmory(state, network.getPlayerId());
     inputController.setEnabled(currentPhase === 'combat');
@@ -374,7 +375,6 @@ export async function bootstrapGame(): Promise<void> {
     detachQuickPing();
     detachExtraction();
     detachMutator();
-    liveArmoryState = null;
     currentPhase = 'combat';
     inputController.setEnabled(true);
     audio.setPhase('combat');
@@ -395,10 +395,8 @@ export async function bootstrapGame(): Promise<void> {
     const welcome = await network.connect(serverUrl, displayName);
     worldRenderer.applyLevel(welcome.level);
     worldRenderer.setLocalPlayerId(welcome.playerId);
-    playerId = welcome.playerId;
     serverTickRate = welcome.tickRate;
     snapshotRateSmooth = welcome.tickRate;
-    liveArmoryState = welcome.armory;
     currentPhase = welcome.armory.phase;
     hud.updateArmory(welcome.armory, welcome.playerId);
     inputController.setEnabled(currentPhase === 'combat');
@@ -565,19 +563,6 @@ function handleResize(renderer: WebGLRenderer, camera: OrthographicCamera): void
 const pointerNear = new Vector3();
 const pointerFar = new Vector3();
 const pointerDir = new Vector3();
-
-type ChickenRig = {
-  leftWing: Mesh;
-  rightWing: Mesh;
-  head: Mesh;
-  tail: Mesh;
-  base: {
-    leftWingZ: number;
-    rightWingZ: number;
-    headX: number;
-    tailX: number;
-  };
-};
 
 type EnemyRig = {
   leftWing?: Mesh;
@@ -2104,10 +2089,12 @@ class ProjectileAvatar {
   }
 }
 
+/* eslint-disable @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access */
+
 class ImpactSystem {
   readonly group = new Group();
-  private readonly pool: Mesh[] = [];
-  private readonly active: Mesh[] = [];
+  private readonly pool: Mesh<PlaneGeometry, MeshBasicMaterial>[] = [];
+  private readonly active: Mesh<PlaneGeometry, MeshBasicMaterial>[] = [];
   private readonly geometry: PlaneGeometry;
   private readonly baseTexture: CanvasTexture;
 
@@ -2119,7 +2106,7 @@ class ImpactSystem {
 
   spawn(x: number, y: number, color: number): void {
     const mesh = this.pool.pop() ?? this.createImpactMesh();
-    const material = mesh.material as MeshBasicMaterial;
+    const material = mesh.material;
     material.color.setHex(color);
     material.opacity = 0.8;
     mesh.position.set(x, 1.4, y);
@@ -2143,7 +2130,8 @@ class ImpactSystem {
       const ratio = Math.max(0, Math.min(1, remaining / initial));
       const scale = 0.5 + (1 - ratio) * 1.8;
       mesh.scale.setScalar(scale);
-      (mesh.material as MeshBasicMaterial).opacity = 0.15 + ratio * 0.65;
+      const material = mesh.material;
+      material.opacity = 0.15 + ratio * 0.65;
     }
   }
 
@@ -2153,7 +2141,7 @@ class ImpactSystem {
     }
   }
 
-  private createImpactMesh(): Mesh {
+  private createImpactMesh(): Mesh<PlaneGeometry, MeshBasicMaterial> {
     const material = new MeshBasicMaterial({
       map: this.baseTexture,
       transparent: true,
@@ -2171,7 +2159,7 @@ class ImpactSystem {
   private recycle(index: number): void {
     const mesh = this.active[index];
     this.group.remove(mesh);
-    (mesh.material as MeshBasicMaterial).opacity = 0;
+    mesh.material.opacity = 0;
     this.pool.push(mesh);
     this.active.splice(index, 1);
   }
@@ -2179,8 +2167,8 @@ class ImpactSystem {
 
 class PsychicPulseSystem {
   readonly group = new Group();
-  private readonly pool: Mesh[] = [];
-  private readonly active: Mesh[] = [];
+  private readonly pool: Mesh<PlaneGeometry, ShaderMaterial>[] = [];
+  private readonly active: Mesh<PlaneGeometry, ShaderMaterial>[] = [];
   private readonly geometry: PlaneGeometry;
 
   constructor() {
@@ -2190,7 +2178,7 @@ class PsychicPulseSystem {
 
   spawn(x: number, y: number, color: number): void {
     const mesh = this.pool.pop() ?? this.createMesh();
-    const material = mesh.material as ShaderMaterial;
+    const material = mesh.material;
     material.uniforms.uColor.value.setHex(color);
     material.uniforms.uProgress.value = 0;
     mesh.position.set(x, 2, y);
@@ -2213,7 +2201,7 @@ class PsychicPulseSystem {
         continue;
       }
       const progress = 1 - remaining / duration;
-      const material = mesh.material as ShaderMaterial;
+      const material = mesh.material;
       material.uniforms.uProgress.value = progress;
       material.needsUpdate = true;
       const growth = 1 + progress * 1.8;
@@ -2228,7 +2216,7 @@ class PsychicPulseSystem {
     }
   }
 
-  private createMesh(): Mesh {
+  private createMesh(): Mesh<PlaneGeometry, ShaderMaterial> {
     const material = new ShaderMaterial({
       uniforms: {
         uProgress: { value: 0 },
@@ -2279,6 +2267,8 @@ class PsychicPulseSystem {
     this.active.splice(index, 1);
   }
 }
+
+/* eslint-enable @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access */
 
 class ArtifactShard {
   readonly id: string;
@@ -2931,100 +2921,6 @@ function mulberry32(seed: number): () => number {
 
 function nextPowerOfTwo(value: number): number {
   return 2 ** Math.ceil(Math.log2(Math.max(1, value)));
-}
-
-function createChickenModel(primaryColor: number): Group {
-  const group = new Group();
-
-  const bodyMaterial = new MeshStandardMaterial({
-    color: primaryColor,
-    roughness: 0.55,
-    metalness: 0.12
-  });
-  const body = new Mesh(new SphereGeometry(7.2, 12, 12), bodyMaterial);
-  body.position.y = 6;
-  body.userData.tint = true;
-  group.add(body);
-
-  const tailMaterial = bodyMaterial.clone();
-  const tail = new Mesh(new ConeGeometry(3.2, 6, 6, 1), tailMaterial);
-  tail.rotation.x = -Math.PI / 2;
-  tail.position.set(0, 4.5, -6.5);
-  tail.userData.tint = true;
-  group.add(tail);
-
-  const wingMaterial = bodyMaterial.clone();
-  const wingGeometry = new ConeGeometry(2.8, 5.4, 5, 1);
-  const leftWing = new Mesh(wingGeometry, wingMaterial);
-  leftWing.rotation.z = Math.PI / 2.2;
-  leftWing.position.set(5, 5.5, 0);
-  leftWing.userData.tint = true;
-  group.add(leftWing);
-  const rightWing = leftWing.clone();
-  rightWing.position.x = -5;
-  rightWing.rotation.z = -Math.PI / 2.2;
-  group.add(rightWing);
-
-  const headMaterial = new MeshStandardMaterial({
-    color: 0xfff4d2,
-    roughness: 0.45,
-    metalness: 0.05
-  });
-  const head = new Mesh(new SphereGeometry(4.2, 10, 10), headMaterial);
-  head.position.set(0, 9.5, 4.5);
-  group.add(head);
-
-  const beakMaterial = new MeshStandardMaterial({
-    color: 0xf97316,
-    roughness: 0.4,
-    metalness: 0.1
-  });
-  const beak = new Mesh(new ConeGeometry(1.8, 3.8, 6, 1), beakMaterial);
-  beak.rotation.x = Math.PI / 2;
-  beak.position.set(0, 8.8, 8.2);
-  group.add(beak);
-
-  const crestMaterial = new MeshStandardMaterial({
-    color: 0xf87171,
-    roughness: 0.5,
-    metalness: 0.05
-  });
-  const crest = new Mesh(new SphereGeometry(1.6, 6, 6), crestMaterial);
-  crest.position.set(0, 11.2, 4.2);
-  group.add(crest);
-
-  const eyeMaterial = new MeshStandardMaterial({ color: 0x0f172a, roughness: 0.4, metalness: 0.3 });
-  const eyeGeometry = new SphereGeometry(0.8, 6, 6);
-  const leftEye = new Mesh(eyeGeometry, eyeMaterial);
-  leftEye.position.set(1.4, 9.4, 6.8);
-  group.add(leftEye);
-  const rightEye = leftEye.clone();
-  rightEye.position.x = -1.4;
-  group.add(rightEye);
-
-  group.scale.setScalar(0.85);
-  group.userData.rig = {
-    leftWing,
-    rightWing,
-    head,
-    tail,
-    base: {
-      leftWingZ: leftWing.rotation.z,
-      rightWingZ: rightWing.rotation.z,
-      headX: head.rotation.x,
-      tailX: tail.rotation.x
-    }
-  } satisfies ChickenRig;
-  return group;
-}
-
-function applyChickenTint(model: Group, color: number): void {
-  model.traverse((child) => {
-    if (child instanceof Mesh && child.userData.tint) {
-      const mat = child.material as MeshStandardMaterial;
-      mat.color.setHex(color);
-    }
-  });
 }
 
 function createEnemyModel(kind: EnemyKind): Group {

@@ -1,32 +1,32 @@
-import {
+import { NETWORK_PROTOCOL_VERSION } from '@farsight/shared';
+import type {
+  ArmoryItem,
+  ArmoryState,
   AugmentAppliedMessage,
   AugmentId,
   BossSpawnedMessage,
   ChooseAugmentMessage,
   ClientMessage,
+  EntityDelta,
+  ExtractionEventMessage,
   HelloMessage,
   InputMessage,
   LevelData,
   LevelUpOfferMessage,
-  NETWORK_PROTOCOL_VERSION,
+  MutatorActivatedMessage,
   ObjectiveState,
   PingMessage,
   PlayerSummary,
   QuickPingBroadcastMessage,
   QuickPingKind,
   QuickPingMessage,
+  ReadyContext,
   RosterEntry,
   ServerMessage,
+  SummaryAcknowledgeMessage,
   Vector2D,
   WorldSnapshot,
-  ArmoryState,
-  ArmoryItem,
-  ReadyContext,
-  WorldSnapshotDelta,
-  EntityDelta,
-  ExtractionEventMessage,
-  MutatorActivatedMessage,
-  SummaryAcknowledgeMessage
+  WorldSnapshotDelta
 } from '@farsight/shared';
 
 export type SnapshotListener = (snapshot: WorldSnapshot) => void;

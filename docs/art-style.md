@@ -15,6 +15,13 @@ Work in 128×128 or 64×128 canvas tiles. Paint base gradients first, then scatt
 - Mark tintable submeshes with `mesh.userData.tint = true` so gameplay code can recolor allies vs. enemies without duplicating geometry.
 - Favor exaggerated proportions (large heads, small torsos) to stay readable from the tilted camera. Stack primitives (spheres, cones, short cylinders) instead of dense sculpting.
 
+## Armory Preview Attachments
+- Base chicken rig lands at ~420 tris; wings, crest, and tail stay tintable for squad color swaps.
+- `cosmic-plumage`: 110 tris using aurora palette (`#93c5fd`, `#6b21a8`) with emissive intensity capped at 0.6.
+- `ember-sheen`: 90 tris of staggered ember cones in `#f97316`/`#fb923c`; keep emissive under 0.8 to avoid bloom spill.
+- `midnight-veil`: 140 tris; draped indigo shell (`#1e3a8a`) with 12 star specks at `#facc15` glow.
+- `suncrest`: 70 tris of feather spikes; blend `#facc15` through `#fcd34d` for daytime crest highlights.
+
 ## Lighting & VFX
 - Directional key light sits at `(160, 340, 180)`; paint highlights assuming a 35° downlight from the northeast.
 - Avoid baked AO in textures; lightweight shader-driven shadows handle depth cues.

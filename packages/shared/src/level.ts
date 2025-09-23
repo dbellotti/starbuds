@@ -31,7 +31,7 @@ export function generateLevel(config: LevelConfig): LevelData {
   const rng = mulberry32(config.seed);
   const biome = pickBiome(config.seed);
 
-  const tiles: LevelTile[] = new Array(width * height).fill('wall');
+  const tiles: LevelTile[] = Array.from({ length: width * height }, () => 'wall');
 
   // Random walker carving algorithm
   const totalCells = width * height;
