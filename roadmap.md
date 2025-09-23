@@ -38,10 +38,9 @@ This plan keeps the game fun at every stage while steering toward a rich, perfor
 - **Tooling**: Added `npm run matchmaking:test` harness for reconnect smoke, `npm run replay:inputs` for deterministic input playback, and Vite bundle budgets to flag oversized chunks.
 
 ## Milestone 5 – Launch-Ready Polish (Week 16–20)
-- **Gameplay & Balance**: Finalize difficulty curve with analytics-driven tweaks, add tutorial onboarding, and implement fail-states (extraction success/failure summary).
-- **Player Experience Audit**: First-pass audit complete (`docs/milestone-5-ux-audit.md`) with centered armory overlay + preview stage shipping and prioritized follow-ups for onboarding, extraction cues, and post-run rewards.
-- **Player Experience Audit**: Armory overlay, tutorial overlays, extraction beacon VFX/audio, loadout chips, and post-run debrief are live; audit doc now tracks remaining art/VO follow-ups only.
-- **Visual & Audio**: Armory HUD rebuilt as a full-screen, readiness-aware overlay with upgrade/cosmetic previews; extraction/mutator cues received bespoke audio sweeps and beacon effects while shader/VO refinements remain scheduled next.
+- **Gameplay & Balance**: Finalize difficulty curve with analytics-driven tweaks; live tutorial onboarding + extraction fail/success flows now ship with post-run acknowledgements.
+- **Player Experience Audit ✅**: Centered armory overlay, preview/state chips, first-session tutorials, extraction beacon VFX/audio, mutator callouts, and post-run debrief are in; remaining follow-ups (cosmetic rigs, VO polish) tracked in `docs/milestone-5-ux-audit.md`.
+- **Visual & Audio**: Armory HUD rebuilt as a full-screen, readiness-aware overlay; extraction/mutator cues received bespoke audio sweeps while shader/VO refinements stay scheduled next. ✅
 - **Performance**: Complete lag compensation for projectiles, add server autoscaling plan, and run soak tests (4-player, 1-hour sessions) logging CPU/memory/network stats.
 - **Tooling & Ops**: Dockerize server with Tailscale-friendly entrypoint, create deployment checklist, documentation for operators, and automated bug-report template capturing seed/logs/screenshot.
 
