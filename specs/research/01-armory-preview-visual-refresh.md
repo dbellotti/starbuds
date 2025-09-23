@@ -1,4 +1,3 @@
-```markdown
 ---
 date: 2025-09-23T04:42:08Z
 researcher: Codex
@@ -60,4 +59,3 @@ Armory UI is DOM-driven but can host a Three.js canvas; reuse existing bootstrap
 ## Open Questions
 - Should cosmetic previews display ability VFX loops or remain idle-focused?
 - Do we stream high-res meshes on demand or bundle with initial load?
-```
