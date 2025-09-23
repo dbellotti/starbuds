@@ -2038,8 +2038,7 @@ let pausedForArmory = false;
 let latestSnapshot: WorldSnapshot | null = null;
 let lastFullSnapshotTick = 0;
 const FULL_SNAPSHOT_INTERVAL = 12;
-let armoryTransitionTimer: NodeJS.Timeout | null = null;
-const SUMMARY_HOLD_MS = 2200;
+const summaryAcknowledgements = new Set<string>();
 
 interface ClientContext {
   id: string;
@@ -2256,6 +2255,15 @@ function handleClientMessage(context: ClientContext, raw: RawData): void {
       break;
     }
 
+    case 'summary-ack': {
+      if (!context.hasJoined || sessionPhase !== 'summary') {
+        return;
+      }
+      summaryAcknowledgements.add(context.id);
+      maybeAdvanceFromSummary();
+      break;
+    }
+
     default: {
       assertNever(message);
     }
@@ -2266,6 +2274,8 @@ function handleDisconnect(context: ClientContext): void {
   if (clients.delete(context.socket) && context.hasJoined) {
     world.removePlayer(context.id);
     armory.removePlayer(context.id);
+    summaryAcknowledgements.delete(context.id);
+    maybeAdvanceFromSummary();
     console.log(`player left: ${context.displayName ?? context.id}`);
     broadcastArmoryState(armory.buildState(sessionPhase, runNumber));
   }
@@ -2472,19 +2482,28 @@ function computeVelocity(input: PlayerInputState): { x: number; y: number } {
 
 function handleRunSummary(summary: RunSummary): void {
   armory.grantRunRewards(summary);
-  armory.setSummary(summary, Date.now() + SUMMARY_HOLD_MS);
+  armory.setSummary(summary, null);
   sessionPhase = 'summary';
   pausedForArmory = true;
-  if (armoryTransitionTimer) {
-    clearTimeout(armoryTransitionTimer);
-  }
+  summaryAcknowledgements.clear();
   latestSnapshot = null;
   const state = armory.buildState(sessionPhase, runNumber);
   broadcastArmoryState(state);
-  armoryTransitionTimer = setTimeout(() => {
-    armoryTransitionTimer = null;
-    enterArmoryStage();
-  }, SUMMARY_HOLD_MS);
+  maybeAdvanceFromSummary();
+}
+
+function maybeAdvanceFromSummary(): void {
+  if (sessionPhase !== 'summary') {
+    return;
+  }
+  let activePlayers = 0;
+  for (const player of world.players.values()) {
+    activePlayers += 1;
+    if (!summaryAcknowledgements.has(player.id)) {
+      return;
+    }
+  }
+  enterArmoryStage();
 }
 
 function enterArmoryStage(): void {
@@ -2493,16 +2512,13 @@ function enterArmoryStage(): void {
   runNumber += 1;
   armory.resetReady();
   armory.setSummary(null, null);
+  summaryAcknowledgements.clear();
   world.resetForArmory((player) => armory.applyLoadout(player, world));
   latestSnapshot = null;
   broadcastArmoryState();
 }
 
 function startNextRun(): void {
-  if (armoryTransitionTimer) {
-    clearTimeout(armoryTransitionTimer);
-    armoryTransitionTimer = null;
-  }
   sessionPhase = 'combat';
   pausedForArmory = false;
   armory.resetReady();

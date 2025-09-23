@@ -274,6 +274,7 @@ canvas {
   pointer-events: none;
   transition: opacity 0.25s ease;
   z-index: 4;
+  overflow-y: auto;
 }
 
 .hud-armory.is-visible {
@@ -293,7 +294,7 @@ canvas {
   border-radius: 18px;
   border: 1px solid rgba(148, 163, 184, 0.22);
   box-shadow: 0 32px 80px rgba(8, 12, 20, 0.6);
-  overflow: hidden;
+  overflow-y: auto;
 }
 
 .hud-armory[data-phase="summary"] .hud-armory-dialog {
@@ -304,6 +305,7 @@ canvas {
 @media (max-width: 960px) {
   .hud-armory {
     padding: 32px;
+    align-items: flex-start;
   }
 
   .hud-armory-dialog {
@@ -318,6 +320,7 @@ canvas {
 @media (max-width: 720px) {
   .hud-armory {
     padding: 24px;
+    align-items: flex-start;
   }
 
   .hud-armory-dialog {
@@ -411,6 +414,38 @@ canvas {
   flex-direction: column;
   gap: 10px;
   margin-top: auto;
+}
+
+.hud-armory-ready {
+  width: 100%;
+  font-size: 10px;
+  letter-spacing: 1.6px;
+  text-transform: uppercase;
+  padding: 10px 14px;
+  border-radius: 10px;
+  border: 1px solid rgba(96, 165, 250, 0.45);
+  background: linear-gradient(135deg, rgba(15, 23, 42, 0.92), rgba(30, 41, 59, 0.86));
+  color: #bfdbfe;
+  cursor: pointer;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease, transform 0.2s ease;
+}
+
+.hud-armory-ready:hover:not(:disabled) {
+  transform: translateY(-1px);
+  border-color: rgba(147, 197, 253, 0.7);
+  box-shadow: 0 12px 20px rgba(59, 130, 246, 0.28);
+}
+
+.hud-armory-ready.is-ready {
+  border-color: rgba(34, 197, 94, 0.75);
+  box-shadow: 0 0 20px rgba(34, 197, 94, 0.28);
+  color: #bbf7d0;
+}
+
+.hud-armory-ready:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+  box-shadow: none;
 }
 
 .hud-armory-launch-hint {
@@ -1385,6 +1420,31 @@ canvas {
   font-size: 11px;
   letter-spacing: 1px;
   color: rgba(148, 163, 184, 0.9);
+}
+
+.hud-summary-continue {
+  align-self: flex-end;
+  padding: 8px 18px;
+  border-radius: 999px;
+  border: 1px solid rgba(96, 165, 250, 0.6);
+  background: rgba(15, 23, 42, 0.88);
+  color: #bfdbfe;
+  font-size: 11px;
+  letter-spacing: 1.2px;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: border-color 0.2s ease, transform 0.2s ease;
+}
+
+.hud-summary-continue:hover:not(:disabled) {
+  transform: translateY(-1px);
+  border-color: rgba(96, 165, 250, 0.85);
+}
+
+.hud-summary-continue:disabled {
+  opacity: 0.6;
+  cursor: wait;
+  border-color: rgba(148, 163, 184, 0.4);
 }
 
 .hud-boss-banner {

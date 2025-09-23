@@ -117,6 +117,9 @@ export async function bootstrapGame(): Promise<void> {
     },
     onLaunchRun: () => {
       network.launchRun();
+    },
+    onSummaryAcknowledge: () => {
+      network.acknowledgeSummary();
     }
   });
   const debug = createDebugOverlay(mountNode);

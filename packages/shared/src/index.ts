@@ -345,6 +345,10 @@ export interface LaunchRunMessage {
   type: 'launch-run';
 }
 
+export interface SummaryAcknowledgeMessage {
+  type: 'summary-ack';
+}
+
 export type ClientMessage =
   | HelloMessage
   | InputMessage
@@ -354,7 +358,8 @@ export type ClientMessage =
   | QuickPingMessage
   | ArmoryPurchaseMessage
   | ArmoryEquipMessage
-  | LaunchRunMessage;
+  | LaunchRunMessage
+  | SummaryAcknowledgeMessage;
 
 export interface WelcomeMessage {
   type: 'welcome';

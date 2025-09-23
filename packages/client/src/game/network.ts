@@ -25,7 +25,8 @@ import {
   WorldSnapshotDelta,
   EntityDelta,
   ExtractionEventMessage,
-  MutatorActivatedMessage
+  MutatorActivatedMessage,
+  SummaryAcknowledgeMessage
 } from '@farsight/shared';
 
 export type SnapshotListener = (snapshot: WorldSnapshot) => void;
@@ -312,6 +313,14 @@ export class GameNetwork {
         } satisfies ClientMessage
       )
     );
+  }
+
+  acknowledgeSummary(): void {
+    if (!this.socket || this.socket.readyState !== WebSocket.OPEN) {
+      return;
+    }
+    const message: SummaryAcknowledgeMessage = { type: 'summary-ack' };
+    this.socket.send(JSON.stringify(message satisfies ClientMessage));
   }
 
   dispose(): void {

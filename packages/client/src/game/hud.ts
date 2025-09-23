@@ -105,6 +105,7 @@ export interface HudOptions {
   onArmoryPurchase?: (itemId: string) => void;
   onArmoryEquip?: (itemId: string, slot?: ArmoryItem['slot']) => void;
   onLaunchRun?: () => void;
+  onSummaryAcknowledge?: () => void;
 }
 
 export function createHud(parent: HTMLElement, options: HudOptions = {}): Hud {
@@ -238,6 +239,12 @@ export function createHud(parent: HTMLElement, options: HudOptions = {}): Hud {
   summaryCountdown.className = 'hud-summary-countdown';
   summaryCard.appendChild(summaryCountdown);
 
+  const summaryActionButton = document.createElement('button');
+  summaryActionButton.type = 'button';
+  summaryActionButton.className = 'hud-summary-continue';
+  summaryActionButton.textContent = 'Return to Armory';
+  summaryCard.appendChild(summaryActionButton);
+
   const bossBanner = document.createElement('div');
   bossBanner.className = 'hud-boss-banner';
   bossBanner.textContent = '';
@@ -337,6 +344,21 @@ export function createHud(parent: HTMLElement, options: HudOptions = {}): Hud {
   const armoryActions = document.createElement('div');
   armoryActions.className = 'hud-armory-actions';
   armorySidebar.appendChild(armoryActions);
+
+  const armoryReadyToggle = document.createElement('button');
+  armoryReadyToggle.type = 'button';
+  armoryReadyToggle.className = 'hud-armory-ready';
+  armoryReadyToggle.textContent = 'Prep Loadout';
+  armoryActions.appendChild(armoryReadyToggle);
+
+  const handleArmoryReadyClick = () => {
+    if (armoryReadyToggle.disabled) {
+      return;
+    }
+    toggleReady('armory');
+  };
+
+  armoryReadyToggle.addEventListener('click', handleArmoryReadyClick);
 
   const armoryLaunchHint = document.createElement('p');
   armoryLaunchHint.className = 'hud-armory-launch-hint';
@@ -558,9 +580,8 @@ export function createHud(parent: HTMLElement, options: HudOptions = {}): Hud {
   const delayedTasks: number[] = [];
   const playerArtifactCounts = new Map<string, Map<ArtifactKind, number>>();
   let bossBannerTimer: number | null = null;
-  let summaryTimer: number | null = null;
-  let summaryEndsAt = 0;
   let activeSummary: RunSummary | null = null;
+  let summaryAcknowledged = false;
   let hasShownCombatHelp = isTutorialComplete('inputHelp');
 
   const hideBossBanner = () => {
@@ -581,40 +602,61 @@ export function createHud(parent: HTMLElement, options: HudOptions = {}): Hud {
     }, 3800);
   };
 
+  function computeReadyLabel(context: ReadyContext, pressed: boolean, isSummary: boolean): string {
+    if (isSummary) {
+      return 'Summary';
+    }
+    if (context === 'armory') {
+      return pressed ? 'Ready for Drop' : 'Prep Loadout';
+    }
+    return pressed ? 'Ready' : 'Ready Up';
+  }
+
   const updateReadyButton = () => {
     const context = currentPhase === 'armory' ? 'armory' : 'extraction';
     readyButton.dataset.context = context;
     const isSummary = currentPhase === 'summary';
     const pressed = context === 'armory' ? armoryReady : extractionReady;
-    const label = isSummary
-      ? 'Summary'
-      : context === 'armory'
-        ? pressed
-          ? 'Ready for Drop'
-          : 'Prep Loadout'
-        : pressed
-          ? 'Ready'
-          : 'Ready Up';
     const disabled = isSummary || !options.onReadyChange;
+    const label = computeReadyLabel(context, pressed, isSummary);
     readyButton.disabled = disabled;
     readyButton.classList.toggle('is-ready', pressed && !disabled);
     readyButton.textContent = label;
     readyButton.setAttribute('aria-pressed', pressed && !disabled ? 'true' : 'false');
+    updateArmoryReadyToggle();
   };
+
+  function updateArmoryReadyToggle(): void {
+    if (!armoryReadyToggle) {
+      return;
+    }
+    const disabled = currentPhase !== 'armory' || !options.onReadyChange;
+    const label = computeReadyLabel('armory', armoryReady, currentPhase === 'summary');
+    armoryReadyToggle.disabled = disabled;
+    armoryReadyToggle.textContent = label;
+    armoryReadyToggle.classList.toggle('is-ready', armoryReady && !disabled);
+  }
+
+  function toggleReady(context: ReadyContext): void {
+    if (!options.onReadyChange) {
+      return;
+    }
+    if (context === 'armory') {
+      armoryReady = !armoryReady;
+      options.onReadyChange(armoryReady, 'armory');
+    } else {
+      extractionReady = !extractionReady;
+      options.onReadyChange(extractionReady, 'extraction');
+    }
+    updateReadyButton();
+  }
 
   const handleReadyClick = () => {
     if (readyButton.disabled) {
       return;
     }
     const context = (readyButton.dataset.context as ReadyContext) ?? 'extraction';
-    if (context === 'armory') {
-      armoryReady = !armoryReady;
-      options.onReadyChange?.(armoryReady, 'armory');
-    } else {
-      extractionReady = !extractionReady;
-      options.onReadyChange?.(extractionReady, 'extraction');
-    }
-    updateReadyButton();
+    toggleReady(context);
   };
 
   readyButton.addEventListener('click', handleReadyClick);
@@ -740,42 +782,22 @@ export function createHud(parent: HTMLElement, options: HudOptions = {}): Hud {
     loadoutChips.replaceChildren(...chips);
   }
 
-  function updateSummaryCountdown(): void {
-    if (!summaryEndsAt) {
-      summaryCountdown.textContent = '';
-      return;
-    }
-    const remainingMs = summaryEndsAt - Date.now();
-    if (remainingMs <= 0) {
-      summaryCountdown.textContent = 'Returning to armory…';
-      if (summaryTimer !== null) {
-        window.clearInterval(summaryTimer);
-        summaryTimer = null;
-      }
-      summaryEndsAt = 0;
-      return;
-    }
-    const seconds = Math.ceil(remainingMs / 1000);
-    summaryCountdown.textContent = `Returning to armory in ${seconds}s`;
-  }
-
   function hideRunSummaryOverlay(): void {
-    if (summaryTimer !== null) {
-      window.clearInterval(summaryTimer);
-      summaryTimer = null;
-    }
-    summaryEndsAt = 0;
     activeSummary = null;
+    summaryAcknowledged = false;
+    summaryActionButton.disabled = false;
+    summaryActionButton.textContent = 'Return to Armory';
+    summaryCountdown.textContent = '';
     summaryOverlay.classList.remove('is-visible');
     summaryOverlay.setAttribute('aria-hidden', 'true');
     summaryTitle.textContent = '';
     summaryStats.textContent = '';
     summaryList.replaceChildren();
-    summaryCountdown.textContent = '';
   }
 
-  function showRunSummaryOverlay(summary: RunSummary, endsAt: number | null): void {
+  function showRunSummaryOverlay(summary: RunSummary): void {
     activeSummary = summary;
+    summaryAcknowledged = false;
     const durationSeconds = Math.max(0, summary.durationTicks / TICK_RATE);
     const minutes = Math.floor(durationSeconds / 60);
     const seconds = Math.round(durationSeconds - minutes * 60);
@@ -797,16 +819,21 @@ export function createHud(parent: HTMLElement, options: HudOptions = {}): Hud {
     );
     summaryOverlay.classList.add('is-visible');
     summaryOverlay.setAttribute('aria-hidden', 'false');
-    summaryEndsAt = endsAt ?? 0;
-    updateSummaryCountdown();
-    if (summaryTimer !== null) {
-      window.clearInterval(summaryTimer);
-      summaryTimer = null;
-    }
-    if (summaryEndsAt > Date.now()) {
-      summaryTimer = window.setInterval(updateSummaryCountdown, 500);
-    }
+    summaryActionButton.disabled = false;
+    summaryActionButton.textContent = 'Return to Armory';
+    summaryCountdown.textContent = 'Review the sortie report, then continue when ready.';
   }
+
+  summaryActionButton.addEventListener('click', () => {
+    if (summaryAcknowledged) {
+      return;
+    }
+    summaryAcknowledged = true;
+    summaryActionButton.disabled = true;
+    summaryActionButton.textContent = 'Waiting for squad…';
+    summaryCountdown.textContent = 'Waiting for squad…';
+    options.onSummaryAcknowledge?.();
+  });
 
   function getArmorySlotLabel(item: ArmoryItem): string {
     if (item.kind === 'cosmetic') {
@@ -1091,7 +1118,7 @@ export function createHud(parent: HTMLElement, options: HudOptions = {}): Hud {
     armoryPanel.classList.toggle('is-visible', state.phase !== 'combat');
 
     if (state.phase === 'summary' && state.summary) {
-      showRunSummaryOverlay(state.summary, state.summaryEndsAt);
+      showRunSummaryOverlay(state.summary);
     } else {
       hideRunSummaryOverlay();
     }
@@ -1646,6 +1673,7 @@ export function createHud(parent: HTMLElement, options: HudOptions = {}): Hud {
   function dispose(): void {
     audio.dispose();
     readyButton.removeEventListener('click', handleReadyClick);
+    armoryReadyToggle.removeEventListener('click', handleArmoryReadyClick);
     tutorialDismiss.removeEventListener('click', handleTutorialDismiss);
     tutorialOverlay.removeEventListener('click', handleTutorialOverlayClick);
     window.removeEventListener('keydown', handleTutorialKey);
