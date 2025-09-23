@@ -160,6 +160,25 @@ export interface ArmoryState {
   players: PlayerArmoryState[];
   runNumber: number;
   updatedAt: number;
+  summary: RunSummary | null;
+  summaryEndsAt: number | null;
+}
+
+export interface RunSummaryPlayer {
+  id: string;
+  displayName: string;
+  psychicLevel: number;
+  augments: AugmentId[];
+  artifacts: ArtifactKind[];
+  damageTaken: number;
+  xpCollected: number;
+}
+
+export interface RunSummary {
+  wave: number;
+  totalKills: number;
+  durationTicks: number;
+  playerStats: RunSummaryPlayer[];
 }
 
 export const BASE_PLAYER_DAMAGE = 25;
@@ -398,6 +417,18 @@ export interface BossSpawnedMessage {
   kind: EnemyKind;
 }
 
+export interface ExtractionEventMessage {
+  type: 'extraction-event';
+  event: 'available' | 'countdown-start' | 'countdown-abort' | 'success';
+  position: Vector2D | null;
+  countdown: number | null;
+}
+
+export interface MutatorActivatedMessage {
+  type: 'mutator-activated';
+  mutators: ActiveMutators;
+}
+
 export type ServerMessage =
   | WelcomeMessage
   | SnapshotMessage
@@ -407,7 +438,9 @@ export type ServerMessage =
   | BossSpawnedMessage
   | QuickPingBroadcastMessage
   | SnapshotDeltaMessage
-  | ArmoryStateMessage;
+  | ArmoryStateMessage
+  | ExtractionEventMessage
+  | MutatorActivatedMessage;
 
 export interface EnemyState {
   id: string;

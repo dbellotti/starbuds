@@ -5,11 +5,14 @@ import type {
   ArtifactKind,
   AugmentId,
   AugmentOption,
+  ExtractionEventMessage,
   EnemyKind,
   GamePhase,
+  MutatorActivatedMessage,
   QuickPingBroadcastMessage,
   QuickPingKind,
   ReadyContext,
+  RunSummary,
   WorldSnapshot,
   PlayerArmoryState
 } from '@farsight/shared';
@@ -19,8 +22,59 @@ import {
   LOOT_MAGNET_MAX_RADIUS,
   LOOT_MAGNET_RADIUS_STEP,
   PLAYER_HURT_FLASH_TIME,
+  TICK_RATE,
   getAugmentOption
 } from '@farsight/shared';
+
+type TutorialFlag =
+  | 'armoryIntro'
+  | 'readyHint'
+  | 'launchPrompt'
+  | 'inputHelp'
+  | 'countdownCallout'
+  | 'extractionFail'
+  | 'sortieInfo';
+
+interface TutorialProgress extends Record<TutorialFlag, boolean> {}
+
+const TUTORIAL_STORAGE_KEY = 'farsight/tutorials/v1';
+
+function loadTutorialProgress(): TutorialProgress {
+  try {
+    const stored = localStorage.getItem(TUTORIAL_STORAGE_KEY);
+    if (stored) {
+      const parsed = JSON.parse(stored) as Partial<TutorialProgress>;
+      return {
+        armoryIntro: Boolean(parsed.armoryIntro),
+        readyHint: Boolean(parsed.readyHint),
+        launchPrompt: Boolean(parsed.launchPrompt),
+        inputHelp: Boolean(parsed.inputHelp),
+        countdownCallout: Boolean(parsed.countdownCallout),
+        extractionFail: Boolean(parsed.extractionFail),
+        sortieInfo: Boolean(parsed.sortieInfo)
+      };
+    }
+  } catch (error) {
+    console.warn('Failed to parse tutorial storage', error);
+  }
+  return {
+    armoryIntro: false,
+    readyHint: false,
+    launchPrompt: false,
+    inputHelp: false,
+    countdownCallout: false,
+    extractionFail: false,
+    sortieInfo: false
+  };
+}
+
+function saveTutorialProgress(state: TutorialProgress): void {
+  try {
+    localStorage.setItem(TUTORIAL_STORAGE_KEY, JSON.stringify(state));
+  } catch (error) {
+    console.warn('Failed to persist tutorial storage', error);
+  }
+}
 
 interface LevelUpUiOffer {
   offerId: string;
@@ -41,6 +95,8 @@ export interface Hud {
   updatePingCursor(clientX: number, clientY: number): void;
   commitPingSelection(): QuickPingKind | null;
   cancelPingSelection(): void;
+  handleExtractionEvent(event: ExtractionEventMessage): void;
+  handleMutatorActivated(event: MutatorActivatedMessage): void;
   dispose(): void;
 }
 
@@ -64,6 +120,33 @@ export function createHud(parent: HTMLElement, options: HudOptions = {}): Hud {
   warningLabel.className = 'hud-danger';
   warningLabel.textContent = 'LOCKED ON';
   root.appendChild(warningLabel);
+
+  const tutorialOverlay = document.createElement('div');
+  tutorialOverlay.className = 'hud-tutorial-overlay';
+  tutorialOverlay.setAttribute('aria-hidden', 'true');
+  root.appendChild(tutorialOverlay);
+
+  const tutorialCard = document.createElement('div');
+  tutorialCard.className = 'hud-tutorial-card';
+  tutorialOverlay.appendChild(tutorialCard);
+
+  const tutorialTitle = document.createElement('h3');
+  tutorialTitle.className = 'hud-tutorial-title';
+  tutorialCard.appendChild(tutorialTitle);
+
+  const tutorialBody = document.createElement('div');
+  tutorialBody.className = 'hud-tutorial-body';
+  tutorialCard.appendChild(tutorialBody);
+
+  const tutorialActions = document.createElement('div');
+  tutorialActions.className = 'hud-tutorial-actions';
+  tutorialCard.appendChild(tutorialActions);
+
+  const tutorialDismiss = document.createElement('button');
+  tutorialDismiss.type = 'button';
+  tutorialDismiss.className = 'hud-tutorial-dismiss';
+  tutorialDismiss.textContent = 'Understood';
+  tutorialActions.appendChild(tutorialDismiss);
 
   const panel = document.createElement('div');
   panel.className = 'hud-panel';
@@ -99,6 +182,9 @@ export function createHud(parent: HTMLElement, options: HudOptions = {}): Hud {
   const magnetSummary = document.createElement('div');
   magnetSummary.className = 'hud-build-magnet';
   buildPanel.appendChild(magnetSummary);
+  const loadoutChips = document.createElement('div');
+  loadoutChips.className = 'hud-build-chips';
+  buildPanel.appendChild(loadoutChips);
   panel.appendChild(buildPanel);
 
   const tipLabel = document.createElement('div');
@@ -126,6 +212,31 @@ export function createHud(parent: HTMLElement, options: HudOptions = {}): Hud {
   const toast = document.createElement('div');
   toast.className = 'hud-toast';
   root.appendChild(toast);
+
+  const summaryOverlay = document.createElement('div');
+  summaryOverlay.className = 'hud-summary-overlay';
+  summaryOverlay.setAttribute('aria-hidden', 'true');
+  root.appendChild(summaryOverlay);
+
+  const summaryCard = document.createElement('div');
+  summaryCard.className = 'hud-summary-card';
+  summaryOverlay.appendChild(summaryCard);
+
+  const summaryTitle = document.createElement('h3');
+  summaryTitle.className = 'hud-summary-title';
+  summaryCard.appendChild(summaryTitle);
+
+  const summaryStats = document.createElement('div');
+  summaryStats.className = 'hud-summary-stats';
+  summaryCard.appendChild(summaryStats);
+
+  const summaryList = document.createElement('ul');
+  summaryList.className = 'hud-summary-list';
+  summaryCard.appendChild(summaryList);
+
+  const summaryCountdown = document.createElement('div');
+  summaryCountdown.className = 'hud-summary-countdown';
+  summaryCard.appendChild(summaryCountdown);
 
   const bossBanner = document.createElement('div');
   bossBanner.className = 'hud-boss-banner';
@@ -182,29 +293,127 @@ export function createHud(parent: HTMLElement, options: HudOptions = {}): Hud {
   const mutatorPanel = document.createElement('div');
   mutatorPanel.className = 'hud-mutators';
   objectivesPanel.appendChild(mutatorPanel);
-  const dailyMutatorLabel = document.createElement('div');
-  dailyMutatorLabel.className = 'hud-mutator hud-mutator-daily';
-  mutatorPanel.appendChild(dailyMutatorLabel);
-  const weeklyMutatorLabel = document.createElement('div');
-  weeklyMutatorLabel.className = 'hud-mutator hud-mutator-weekly';
-  mutatorPanel.appendChild(weeklyMutatorLabel);
+  const objectiveDailyMutatorLabel = document.createElement('div');
+  objectiveDailyMutatorLabel.className = 'hud-mutator hud-mutator-daily';
+  mutatorPanel.appendChild(objectiveDailyMutatorLabel);
+  const objectiveWeeklyMutatorLabel = document.createElement('div');
+  objectiveWeeklyMutatorLabel.className = 'hud-mutator hud-mutator-weekly';
+  mutatorPanel.appendChild(objectiveWeeklyMutatorLabel);
 
   const armoryPanel = document.createElement('div');
   armoryPanel.className = 'hud-armory';
   root.appendChild(armoryPanel);
+  const armoryDialog = document.createElement('div');
+  armoryDialog.className = 'hud-armory-dialog';
+  armoryPanel.appendChild(armoryDialog);
+
+  const armorySidebar = document.createElement('aside');
+  armorySidebar.className = 'hud-armory-sidebar';
+  armoryDialog.appendChild(armorySidebar);
+
   const armoryHeader = document.createElement('div');
   armoryHeader.className = 'hud-armory-header';
   armoryHeader.textContent = 'Armory Hub';
-  armoryPanel.appendChild(armoryHeader);
+  armorySidebar.appendChild(armoryHeader);
+
   const armoryCurrency = document.createElement('div');
   armoryCurrency.className = 'hud-armory-currency';
-  armoryPanel.appendChild(armoryCurrency);
+  armorySidebar.appendChild(armoryCurrency);
+
+  const armoryMutators = document.createElement('div');
+  armoryMutators.className = 'hud-armory-mutators';
+  armorySidebar.appendChild(armoryMutators);
+  const armoryDailyMutatorLabel = document.createElement('div');
+  armoryDailyMutatorLabel.className = 'hud-armory-mutator hud-armory-mutator-daily';
+  armoryMutators.appendChild(armoryDailyMutatorLabel);
+  const armoryWeeklyMutatorLabel = document.createElement('div');
+  armoryWeeklyMutatorLabel.className = 'hud-armory-mutator hud-armory-mutator-weekly';
+  armoryMutators.appendChild(armoryWeeklyMutatorLabel);
+
   const armoryReadyList = document.createElement('ul');
   armoryReadyList.className = 'hud-armory-roster';
-  armoryPanel.appendChild(armoryReadyList);
+  armorySidebar.appendChild(armoryReadyList);
+
+  const armoryActions = document.createElement('div');
+  armoryActions.className = 'hud-armory-actions';
+  armorySidebar.appendChild(armoryActions);
+
+  const armoryLaunchHint = document.createElement('p');
+  armoryLaunchHint.className = 'hud-armory-launch-hint';
+  armoryLaunchHint.textContent = 'When everyone is ready, launch the sortie.';
+  armoryActions.appendChild(armoryLaunchHint);
+
+  const launchButton = document.createElement('button');
+  launchButton.type = 'button';
+  launchButton.className = 'hud-armory-launch';
+  launchButton.textContent = 'Launch Sortie';
+  armoryActions.appendChild(launchButton);
+
+  const armoryPreview = document.createElement('div');
+  armoryPreview.className = 'hud-armory-preview';
+  armoryDialog.appendChild(armoryPreview);
+
+  const previewStage = document.createElement('div');
+  previewStage.className = 'hud-armory-preview-stage';
+  armoryPreview.appendChild(previewStage);
+
+  const previewGlyph = document.createElement('div');
+  previewGlyph.className = 'hud-armory-preview-glyph';
+  previewStage.appendChild(previewGlyph);
+
+  const previewBadge = document.createElement('span');
+  previewBadge.className = 'hud-armory-preview-badge';
+  previewStage.appendChild(previewBadge);
+
+  const previewContent = document.createElement('div');
+  previewContent.className = 'hud-armory-preview-content';
+  armoryPreview.appendChild(previewContent);
+
+  const previewTitle = document.createElement('h3');
+  previewTitle.className = 'hud-armory-preview-title';
+  previewContent.appendChild(previewTitle);
+
+  const previewSummary = document.createElement('p');
+  previewSummary.className = 'hud-armory-preview-summary';
+  previewContent.appendChild(previewSummary);
+
+  const previewDescription = document.createElement('p');
+  previewDescription.className = 'hud-armory-preview-description';
+  previewContent.appendChild(previewDescription);
+
+  const previewStatus = document.createElement('div');
+  previewStatus.className = 'hud-armory-preview-status';
+  previewContent.appendChild(previewStatus);
+
+  const previewHint = document.createElement('p');
+  previewHint.className = 'hud-armory-preview-hint';
+  previewHint.textContent = 'Hover or focus an upgrade to see how it affects your build.';
+  previewContent.appendChild(previewHint);
+
+  const sortieInfoButton = document.createElement('button');
+  sortieInfoButton.type = 'button';
+  sortieInfoButton.className = 'hud-sortie-info';
+  sortieInfoButton.textContent = 'What is a Sortie?';
+  previewContent.appendChild(sortieInfoButton);
+
+  const handleSortieInfoClick = () => {
+    showTutorialOverlay(
+      'Sortie Primer',
+      '<p>A sortie is a cooperative drop into the arena. Spend feathers in the armory, ready up with your squad, then hit Launch to deploy.</p><p>Extraction unlocks once you survive enough waves—watch the objectives panel for the beacon.</p>',
+      {
+        highlight: 'launch',
+        dismissLabel: 'Close',
+        onDismiss: () => markTutorial('sortieInfo')
+      }
+    );
+  };
+
+  sortieInfoButton.addEventListener('click', handleSortieInfoClick);
+
   const armorySections = document.createElement('div');
   armorySections.className = 'hud-armory-sections';
-  armoryPanel.appendChild(armorySections);
+  armoryDialog.appendChild(armorySections);
+
   const upgradesSection = document.createElement('div');
   upgradesSection.className = 'hud-armory-section hud-armory-upgrades';
   upgradesSection.innerHTML = '<h3>Upgrades</h3>';
@@ -212,6 +421,7 @@ export function createHud(parent: HTMLElement, options: HudOptions = {}): Hud {
   const upgradesList = document.createElement('div');
   upgradesList.className = 'hud-armory-list';
   upgradesSection.appendChild(upgradesList);
+
   const cosmeticsSection = document.createElement('div');
   cosmeticsSection.className = 'hud-armory-section hud-armory-cosmetics';
   cosmeticsSection.innerHTML = '<h3>Cosmetics</h3>';
@@ -219,17 +429,85 @@ export function createHud(parent: HTMLElement, options: HudOptions = {}): Hud {
   const cosmeticsList = document.createElement('div');
   cosmeticsList.className = 'hud-armory-list';
   cosmeticsSection.appendChild(cosmeticsList);
-  const launchButton = document.createElement('button');
-  launchButton.type = 'button';
-  launchButton.className = 'hud-armory-launch';
-  launchButton.textContent = 'Launch Sortie';
-  armoryPanel.appendChild(launchButton);
   launchButton.addEventListener('click', () => {
     if (launchButton.disabled) {
       return;
     }
     options.onLaunchRun?.();
   });
+
+  const tutorialProgress = loadTutorialProgress();
+  type TutorialHighlight = 'armory' | 'ready' | 'launch' | 'beacon' | null;
+  let tutorialHighlight: TutorialHighlight = null;
+  let tutorialDismissHandler: (() => void) | null = null;
+
+  function isTutorialComplete(flag: TutorialFlag): boolean {
+    return tutorialProgress[flag];
+  }
+
+  function markTutorial(flag: TutorialFlag): void {
+    if (!tutorialProgress[flag]) {
+      tutorialProgress[flag] = true;
+      saveTutorialProgress(tutorialProgress);
+    }
+  }
+
+  function applyTutorialHighlight(target: TutorialHighlight): void {
+    tutorialHighlight = target;
+    armoryDialog.classList.toggle('is-highlighted', target === 'armory');
+    readyButton.classList.toggle('is-highlighted', target === 'ready');
+    launchButton.classList.toggle('is-highlighted', target === 'launch');
+    extractionLabel.classList.toggle('is-highlighted', target === 'beacon');
+  }
+
+  function hideTutorialOverlay(suppressCallback = false): void {
+    if (!tutorialOverlay.classList.contains('is-visible')) {
+      return;
+    }
+    tutorialOverlay.classList.remove('is-visible');
+    tutorialOverlay.setAttribute('aria-hidden', 'true');
+    applyTutorialHighlight(null);
+    const handler = tutorialDismissHandler;
+    tutorialDismissHandler = null;
+    if (handler && !suppressCallback) {
+      handler();
+    }
+  }
+
+  function showTutorialOverlay(
+    title: string,
+    bodyHtml: string,
+    options: { dismissLabel?: string; highlight?: TutorialHighlight; onDismiss?: () => void } = {}
+  ): void {
+    if (tutorialOverlay.classList.contains('is-visible')) {
+      hideTutorialOverlay(true);
+    }
+    tutorialTitle.textContent = title;
+    tutorialBody.innerHTML = bodyHtml;
+    tutorialDismiss.textContent = options.dismissLabel ?? 'Understood';
+    tutorialDismissHandler = options.onDismiss ?? null;
+    applyTutorialHighlight(options.highlight ?? null);
+    tutorialOverlay.classList.add('is-visible');
+    tutorialOverlay.setAttribute('aria-hidden', 'false');
+  }
+
+  const handleTutorialOverlayClick = (event: MouseEvent) => {
+    if (event.target === tutorialOverlay) {
+      hideTutorialOverlay();
+    }
+  };
+
+  const handleTutorialKey = (event: KeyboardEvent) => {
+    if (event.code === 'Escape') {
+      hideTutorialOverlay();
+    }
+  };
+
+  const handleTutorialDismiss = () => hideTutorialOverlay();
+
+  tutorialDismiss.addEventListener('click', handleTutorialDismiss);
+  tutorialOverlay.addEventListener('click', handleTutorialOverlayClick);
+  window.addEventListener('keydown', handleTutorialKey, { passive: true });
 
   const PING_DESCRIPTORS: Array<{ kind: QuickPingKind; label: string; hint: string }> = [
     { kind: 'assist', label: 'Assist', hint: '↑' },
@@ -277,8 +555,13 @@ export function createHud(parent: HTMLElement, options: HudOptions = {}): Hud {
   let pingSelection: QuickPingKind | null = null;
   const rosterDom = new Map<string, RosterRow>();
   const pingTimeouts: number[] = [];
+  const delayedTasks: number[] = [];
   const playerArtifactCounts = new Map<string, Map<ArtifactKind, number>>();
   let bossBannerTimer: number | null = null;
+  let summaryTimer: number | null = null;
+  let summaryEndsAt = 0;
+  let activeSummary: RunSummary | null = null;
+  let hasShownCombatHelp = isTutorialComplete('inputHelp');
 
   const hideBossBanner = () => {
     if (bossBannerTimer !== null) {
@@ -387,12 +670,16 @@ export function createHud(parent: HTMLElement, options: HudOptions = {}): Hud {
 
   function renderMutators(mutators: ActiveMutators): void {
     if (!mutators) {
-      dailyMutatorLabel.textContent = 'Daily Mutator: —';
-      weeklyMutatorLabel.textContent = 'Weekly Mutator: —';
+      objectiveDailyMutatorLabel.textContent = 'Daily Mutator: —';
+      objectiveWeeklyMutatorLabel.textContent = 'Weekly Mutator: —';
+      armoryDailyMutatorLabel.textContent = 'Daily Mutator: —';
+      armoryWeeklyMutatorLabel.textContent = 'Weekly Mutator: —';
       return;
     }
-    dailyMutatorLabel.textContent = `Daily: ${mutators.daily.name} — ${mutators.daily.impactSummary}`;
-    weeklyMutatorLabel.textContent = `Weekly: ${mutators.weekly.name} — ${mutators.weekly.impactSummary}`;
+    objectiveDailyMutatorLabel.textContent = `Daily: ${mutators.daily.name} — ${mutators.daily.impactSummary}`;
+    objectiveWeeklyMutatorLabel.textContent = `Weekly: ${mutators.weekly.name} — ${mutators.weekly.impactSummary}`;
+    armoryDailyMutatorLabel.textContent = `Daily: ${mutators.daily.name} — ${mutators.daily.impactSummary}`;
+    armoryWeeklyMutatorLabel.textContent = `Weekly: ${mutators.weekly.name} — ${mutators.weekly.impactSummary}`;
   }
 
   function renderArmoryRoster(players: PlayerArmoryState[], localId: string | null): void {
@@ -413,6 +700,215 @@ export function createHud(parent: HTMLElement, options: HudOptions = {}): Hud {
       })
     );
   }
+
+  function renderLoadoutSummary(local: PlayerArmoryState | null, state: ArmoryState | null): void {
+    if (!loadoutChips) {
+      return;
+    }
+    loadoutChips.replaceChildren();
+    if (!local || !state) {
+      const empty = document.createElement('span');
+      empty.className = 'hud-chip hud-chip-empty';
+      empty.textContent = 'Armory upgrades will appear here';
+      loadoutChips.appendChild(empty);
+      return;
+    }
+
+    const chips: HTMLElement[] = [];
+    for (const upgradeId of local.equippedUpgrades) {
+      const upgrade = state.upgrades.find((entry) => entry.id === upgradeId);
+      const chip = document.createElement('span');
+      chip.className = 'hud-chip hud-chip-upgrade';
+      chip.textContent = upgrade?.name ?? upgradeId;
+      chips.push(chip);
+    }
+    if (local.equippedCosmeticId) {
+      const cosmetic = state.cosmetics.find((entry) => entry.id === local.equippedCosmeticId);
+      const chip = document.createElement('span');
+      chip.className = 'hud-chip hud-chip-cosmetic';
+      chip.textContent = cosmetic?.name ?? 'Cosmetic';
+      chips.push(chip);
+    }
+
+    if (chips.length === 0) {
+      const empty = document.createElement('span');
+      empty.className = 'hud-chip hud-chip-empty';
+      empty.textContent = 'Equip upgrades in the armory';
+      chips.push(empty);
+    }
+
+    loadoutChips.replaceChildren(...chips);
+  }
+
+  function updateSummaryCountdown(): void {
+    if (!summaryEndsAt) {
+      summaryCountdown.textContent = '';
+      return;
+    }
+    const remainingMs = summaryEndsAt - Date.now();
+    if (remainingMs <= 0) {
+      summaryCountdown.textContent = 'Returning to armory…';
+      if (summaryTimer !== null) {
+        window.clearInterval(summaryTimer);
+        summaryTimer = null;
+      }
+      summaryEndsAt = 0;
+      return;
+    }
+    const seconds = Math.ceil(remainingMs / 1000);
+    summaryCountdown.textContent = `Returning to armory in ${seconds}s`;
+  }
+
+  function hideRunSummaryOverlay(): void {
+    if (summaryTimer !== null) {
+      window.clearInterval(summaryTimer);
+      summaryTimer = null;
+    }
+    summaryEndsAt = 0;
+    activeSummary = null;
+    summaryOverlay.classList.remove('is-visible');
+    summaryOverlay.setAttribute('aria-hidden', 'true');
+    summaryTitle.textContent = '';
+    summaryStats.textContent = '';
+    summaryList.replaceChildren();
+    summaryCountdown.textContent = '';
+  }
+
+  function showRunSummaryOverlay(summary: RunSummary, endsAt: number | null): void {
+    activeSummary = summary;
+    const durationSeconds = Math.max(0, summary.durationTicks / TICK_RATE);
+    const minutes = Math.floor(durationSeconds / 60);
+    const seconds = Math.round(durationSeconds - minutes * 60);
+    summaryTitle.textContent = `Sortie Debrief — Wave ${summary.wave}`;
+    summaryStats.textContent = `${summary.totalKills} kills • ${minutes}m ${seconds.toString().padStart(2, '0')}s`;
+    summaryList.replaceChildren(
+      ...summary.playerStats.map((stats) => {
+        const item = document.createElement('li');
+        item.className = 'hud-summary-row';
+        item.innerHTML = `
+          <span class="hud-summary-name">${stats.displayName}</span>
+          <span class="hud-summary-detail">Level ${stats.psychicLevel}</span>
+          <span class="hud-summary-detail">Augments ${stats.augments.length}</span>
+          <span class="hud-summary-detail">Artifacts ${stats.artifacts.length}</span>
+          <span class="hud-summary-detail">XP ${stats.xpCollected}</span>
+        `;
+        return item;
+      })
+    );
+    summaryOverlay.classList.add('is-visible');
+    summaryOverlay.setAttribute('aria-hidden', 'false');
+    summaryEndsAt = endsAt ?? 0;
+    updateSummaryCountdown();
+    if (summaryTimer !== null) {
+      window.clearInterval(summaryTimer);
+      summaryTimer = null;
+    }
+    if (summaryEndsAt > Date.now()) {
+      summaryTimer = window.setInterval(updateSummaryCountdown, 500);
+    }
+  }
+
+  function getArmorySlotLabel(item: ArmoryItem): string {
+    if (item.kind === 'cosmetic') {
+      return 'Cosmetic Skin';
+    }
+    switch (item.slot) {
+      case 'ability':
+        return 'Ability Upgrade';
+      case 'passive':
+        return 'Passive Upgrade';
+      default:
+        return 'Upgrade';
+    }
+  }
+
+  function resolveItemStatus(item: ArmoryItem, local: PlayerArmoryState | null): string {
+    if (!local) {
+      return 'Connect to inspect and purchase upgrades.';
+    }
+    const feathers = local.feathers;
+    if (item.kind === 'upgrade') {
+      const owned = local.ownedUpgrades.includes(item.id);
+      const equipped = local.equippedUpgrades.includes(item.id);
+      if (equipped) {
+        return 'Equipped for next sortie.';
+      }
+      if (owned) {
+        return 'Owned • Equip to activate benefits.';
+      }
+      return feathers >= item.cost
+        ? `Cost: ${item.cost} feathers` 
+        : `Need ${item.cost - feathers} more feathers.`;
+    }
+    const owned = local.ownedCosmetics.includes(item.id);
+    const equipped = local.equippedCosmeticId === item.id;
+    if (equipped) {
+      return 'Equipped cosmetic skin.';
+    }
+    if (owned) {
+      return 'Owned cosmetic • Equip to show in sortie.';
+    }
+    return feathers >= item.cost
+      ? `Cost: ${item.cost} feathers`
+      : `Need ${item.cost - feathers} more feathers.`;
+  }
+
+  function resolveCosmeticName(id: string | null): string {
+    if (!id || !currentArmory) {
+      return 'Default Rig';
+    }
+    const cosmetic = currentArmory.cosmetics.find((item) => item.id === id);
+    return cosmetic ? cosmetic.name : 'Custom Rig';
+  }
+
+  function resolveEquippedUpgradeNames(local: PlayerArmoryState | null): string {
+    if (!local || !currentArmory) {
+      return 'No upgrades equipped yet.';
+    }
+    const equipped = currentArmory.upgrades
+      .filter((upgrade) => local.equippedUpgrades.includes(upgrade.id))
+      .map((upgrade) => upgrade.name);
+    if (equipped.length === 0) {
+      return 'No upgrades equipped yet.';
+    }
+    return `Upgrades: ${equipped.join(', ')}`;
+  }
+
+  function setPreview(item: ArmoryItem | null): void {
+    const local = localArmory;
+    if (item) {
+      previewStage.dataset.kind = item.kind;
+      previewStage.dataset.slot = item.slot;
+      previewBadge.textContent = getArmorySlotLabel(item);
+      previewTitle.textContent = item.name;
+      previewSummary.textContent = item.statSummary;
+      previewDescription.textContent = item.description;
+      previewStatus.textContent = resolveItemStatus(item, local);
+      previewHint.textContent =
+        item.kind === 'cosmetic'
+          ? 'Purchase or equip from the list on the right to update your look.'
+          : 'Purchase or equip from the list on the right to adjust your build.';
+      return;
+    }
+
+    previewStage.dataset.kind = local ? 'summary' : 'empty';
+    previewStage.dataset.slot = local?.equippedCosmeticId ? 'cosmetic' : 'summary';
+    previewBadge.textContent = 'Current Loadout';
+    previewTitle.textContent = local?.loadoutLabel ?? 'Armory Preview';
+    previewSummary.textContent = resolveEquippedUpgradeNames(local);
+    const cosmeticName = resolveCosmeticName(local?.equippedCosmeticId ?? null);
+    if (local) {
+      previewDescription.textContent = `Feathers available: ${local.feathers}`;
+      previewStatus.textContent = `Cosmetic: ${cosmeticName} • Ready: ${local.ready ? 'Yes' : 'No'}`;
+      previewHint.textContent = 'Hover or focus any card to preview its impact before purchasing.';
+    } else {
+      previewDescription.textContent = 'Connect to the armory to browse upgrades and cosmetics.';
+      previewStatus.textContent = '';
+      previewHint.textContent = 'Waiting for armory sync…';
+    }
+  }
+
+  setPreview(null);
 
   function renderArmoryItems(
     container: HTMLElement,
@@ -438,6 +934,11 @@ export function createHud(parent: HTMLElement, options: HudOptions = {}): Hud {
       const card = document.createElement('div');
       card.className = 'hud-armory-item';
       card.dataset.itemId = item.id;
+      card.dataset.kind = item.kind;
+      card.dataset.slot = item.slot;
+      card.tabIndex = 0;
+      card.setAttribute('role', 'group');
+
       if (item.kind === 'upgrade' && ownedUpgrades.has(item.id)) {
         card.classList.add('is-owned');
       }
@@ -451,14 +952,38 @@ export function createHud(parent: HTMLElement, options: HudOptions = {}): Hud {
         card.classList.add('is-equipped');
       }
 
+      const header = document.createElement('div');
+      header.className = 'hud-armory-item-header';
+      card.appendChild(header);
+
+      const previewChip = document.createElement('div');
+      previewChip.className = 'hud-armory-item-preview';
+      previewChip.dataset.kind = item.kind;
+      previewChip.dataset.slot = item.slot;
+      header.appendChild(previewChip);
+
+      const previewKind = document.createElement('span');
+      previewKind.className = 'hud-armory-item-preview-kind';
+      previewKind.textContent = item.kind === 'upgrade' ? 'Upgrade' : 'Cosmetic';
+      previewChip.appendChild(previewKind);
+
+      const previewSlot = document.createElement('span');
+      previewSlot.className = 'hud-armory-item-preview-slot';
+      previewSlot.textContent = item.kind === 'cosmetic' ? 'Style' : item.slot === 'ability' ? 'Ability' : 'Passive';
+      previewChip.appendChild(previewSlot);
+
+      const headerCopy = document.createElement('div');
+      headerCopy.className = 'hud-armory-item-headline';
+      header.appendChild(headerCopy);
+
       const title = document.createElement('h4');
       title.textContent = item.name;
-      card.appendChild(title);
+      headerCopy.appendChild(title);
 
       const summary = document.createElement('p');
       summary.className = 'hud-armory-summary';
       summary.textContent = item.statSummary;
-      card.appendChild(summary);
+      headerCopy.appendChild(summary);
 
       const description = document.createElement('p');
       description.className = 'hud-armory-description';
@@ -479,12 +1004,10 @@ export function createHud(parent: HTMLElement, options: HudOptions = {}): Hud {
       actionButton.className = 'hud-armory-action';
       footer.appendChild(actionButton);
 
-      const canPurchase = !!local && (item.kind === 'upgrade' ? !ownedUpgrades.has(item.id) : !ownedCosmetics.has(item.id));
-      if (!canPurchase) {
-        card.classList.toggle('is-locked', !local || (!ownedUpgrades.has(item.id) && item.kind === 'upgrade' && feathers < item.cost) || (!ownedCosmetics.has(item.id) && item.kind === 'cosmetic' && feathers < item.cost));
-      }
+      let isLocked = false;
 
       if (!local) {
+        isLocked = true;
         actionButton.disabled = true;
         actionButton.textContent = 'Unavailable';
       } else if (item.kind === 'upgrade') {
@@ -493,6 +1016,7 @@ export function createHud(parent: HTMLElement, options: HudOptions = {}): Hud {
         if (!owned) {
           actionButton.textContent = 'Purchase';
           actionButton.disabled = feathers < item.cost || !options.onArmoryPurchase;
+          isLocked = feathers < item.cost;
           if (!actionButton.disabled) {
             actionButton.addEventListener('click', () => options.onArmoryPurchase?.(item.id));
           }
@@ -515,6 +1039,7 @@ export function createHud(parent: HTMLElement, options: HudOptions = {}): Hud {
         if (!owned) {
           actionButton.textContent = 'Purchase';
           actionButton.disabled = feathers < item.cost || !options.onArmoryPurchase;
+          isLocked = feathers < item.cost;
           if (!actionButton.disabled) {
             actionButton.addEventListener('click', () => options.onArmoryPurchase?.(item.id));
           }
@@ -530,6 +1055,31 @@ export function createHud(parent: HTMLElement, options: HudOptions = {}): Hud {
         }
       }
 
+      if (isLocked) {
+        card.classList.add('is-locked');
+      }
+
+      card.addEventListener('mouseenter', () => {
+        card.classList.add('is-previewing');
+        setPreview(item);
+      });
+      card.addEventListener('mouseleave', () => {
+        card.classList.remove('is-previewing');
+        setPreview(null);
+      });
+      card.addEventListener('focusin', () => {
+        card.classList.add('is-previewing');
+        setPreview(item);
+      });
+      card.addEventListener('focusout', (event) => {
+        const next = event.relatedTarget as Node | null;
+        if (next && card.contains(next)) {
+          return;
+        }
+        card.classList.remove('is-previewing');
+        setPreview(null);
+      });
+
       container.appendChild(card);
     }
   }
@@ -539,6 +1089,12 @@ export function createHud(parent: HTMLElement, options: HudOptions = {}): Hud {
     currentPhase = state.phase;
     armoryPanel.dataset.phase = state.phase;
     armoryPanel.classList.toggle('is-visible', state.phase !== 'combat');
+
+    if (state.phase === 'summary' && state.summary) {
+      showRunSummaryOverlay(state.summary, state.summaryEndsAt);
+    } else {
+      hideRunSummaryOverlay();
+    }
 
     const local = state.players.find((player) => player.playerId === playerId) ?? null;
     localArmory = local;
@@ -552,18 +1108,67 @@ export function createHud(parent: HTMLElement, options: HudOptions = {}): Hud {
     renderArmoryRoster(state.players, playerId);
     renderArmoryItems(upgradesList, state.upgrades, local);
     renderArmoryItems(cosmeticsList, state.cosmetics, local);
+    setPreview(null);
+    renderLoadoutSummary(local, state);
 
     const readyCount = state.players.filter((player) => player.ready).length;
     const total = state.players.length;
     launchButton.disabled = state.phase !== 'armory' || !options.onLaunchRun;
     if (total > 0) {
       launchButton.textContent = `Launch Sortie (${readyCount}/${total})`;
+      const allReady = readyCount === total;
+      armoryLaunchHint.textContent = allReady
+        ? 'All players ready. Launch when the squad is set.'
+        : `Ready players: ${readyCount}/${total}. Toggle Ready on the roster to arm the drop.`;
     } else {
       launchButton.textContent = 'Launch Sortie';
+      armoryLaunchHint.textContent = 'Waiting for squadmates to connect.';
     }
     launchButton.classList.toggle('is-armed', state.phase === 'armory' && readyCount === total && total > 0);
 
     updateReadyButton();
+
+    const ownedCount = local?.ownedUpgrades.length ?? 0;
+    const equippedCount = local?.equippedUpgrades.length ?? 0;
+    const equippedCosmetic = local?.equippedCosmeticId ?? null;
+
+    if (state.phase === 'armory' && !isTutorialComplete('armoryIntro') && !tutorialOverlay.classList.contains('is-visible')) {
+      showTutorialOverlay(
+        'Armory Hub',
+        '<p>Spend feathers on upgrades to shape your build or pick a cosmetic to change your look.</p><p>Hover any card to preview its impact before purchasing.</p>',
+        {
+          highlight: 'armory',
+          onDismiss: () => markTutorial('armoryIntro')
+        }
+      );
+    }
+
+    if (state.phase === 'armory' && local && !local.ready && ownedCount > 0 && !isTutorialComplete('readyHint') && !tutorialOverlay.classList.contains('is-visible')) {
+      showTutorialOverlay(
+        'Ready When Set',
+        '<p>Toggle <strong>Ready</strong> once your loadout is dialed in. Everyone must ready up before the squad can launch.</p>',
+        {
+          highlight: 'ready',
+          onDismiss: () => markTutorial('readyHint')
+        }
+      );
+    }
+
+    if (local?.ready && !isTutorialComplete('readyHint')) {
+      markTutorial('readyHint');
+    }
+
+    if (state.phase === 'armory' && readyCount === total && total > 0 && !isTutorialComplete('launchPrompt') && !tutorialOverlay.classList.contains('is-visible')) {
+      showTutorialOverlay(
+        'Launch the Sortie',
+        '<p>The whole squad is ready. Press <strong>Launch Sortie</strong> to drop into the mission.</p>',
+        {
+          highlight: 'launch',
+          onDismiss: () => markTutorial('launchPrompt')
+        }
+      );
+    }
+
   }
 
   function clearRoster(): void {
@@ -585,6 +1190,8 @@ export function createHud(parent: HTMLElement, options: HudOptions = {}): Hud {
       artifactSummary.textContent = 'Artifacts: —';
       magnetSummary.textContent = 'Loot Magnet: —';
       hideBossBanner();
+      hideTutorialOverlay(true);
+      hideRunSummaryOverlay();
       currentPhase = currentArmory?.phase ?? 'combat';
       extractionReady = false;
       armoryReady = false;
@@ -613,6 +1220,8 @@ export function createHud(parent: HTMLElement, options: HudOptions = {}): Hud {
       artifactSummary.textContent = 'Artifacts: —';
       magnetSummary.textContent = 'Loot Magnet: —';
       hideBossBanner();
+      hideTutorialOverlay(true);
+      hideRunSummaryOverlay();
       currentPhase = currentArmory?.phase ?? 'combat';
       extractionReady = false;
       updateReadyButton();
@@ -625,6 +1234,14 @@ export function createHud(parent: HTMLElement, options: HudOptions = {}): Hud {
       extractionLabel.textContent = 'Extraction: —';
       killLabel.textContent = '';
       return;
+    }
+
+    const previousPhase = currentPhase;
+    currentPhase = currentArmory?.phase ?? 'combat';
+    if (!hasShownCombatHelp && previousPhase !== 'combat' && currentPhase === 'combat') {
+      showToast('Combat Controls', 'Space/Shift: Dash · Q: Ping Wheel', 'is-info');
+      markTutorial('inputHelp');
+      hasShownCombatHelp = true;
     }
 
     const seenPlayers = new Set<string>();
@@ -690,6 +1307,7 @@ export function createHud(parent: HTMLElement, options: HudOptions = {}): Hud {
     updateRoster(snapshot.players, playerId);
     renderObjectives(snapshot.objectives);
     renderMutators(snapshot.mutators);
+    renderLoadoutSummary(localArmory, currentArmory);
 
     const targeted = snapshot.enemies.some((enemy) => enemy.intent === 'windup' && enemy.targetPlayerId === playerId);
     warningLabel.classList.toggle('is-visible', targeted);
@@ -757,12 +1375,16 @@ export function createHud(parent: HTMLElement, options: HudOptions = {}): Hud {
 
     if (!objectives.extractionReady) {
       extractionLabel.textContent = 'Extraction: Locked';
+      extractionLabel.classList.remove('is-highlighted');
     } else if (objectives.extractionCountdown === null) {
       extractionLabel.textContent = 'Extraction: Awaiting Ready';
+      extractionLabel.classList.remove('is-highlighted');
     } else if (objectives.extractionCountdown > 0) {
       extractionLabel.textContent = `Extraction: ${formatSeconds(objectives.extractionCountdown)}`;
+      extractionLabel.classList.add('is-highlighted');
     } else {
       extractionLabel.textContent = 'Extraction: Ready!';
+      extractionLabel.classList.remove('is-highlighted');
     }
   }
 
@@ -836,6 +1458,59 @@ export function createHud(parent: HTMLElement, options: HudOptions = {}): Hud {
   function showBossSpawn(kind: EnemyKind): void {
     const pretty = kind.charAt(0).toUpperCase() + kind.slice(1);
     presentBossBanner('Miniboss inbound', pretty);
+  }
+
+  function handleExtractionEvent(event: ExtractionEventMessage): void {
+    switch (event.event) {
+      case 'available': {
+        showToast('Extraction Beacon Online', 'Ready up and move to the marker.', 'is-info');
+        break;
+      }
+      case 'countdown-start': {
+        if (!isTutorialComplete('countdownCallout')) {
+          showTutorialOverlay(
+            'Hold the Beacon',
+            '<p>The dropship is inbound. Stay near the extraction beacon and keep everyone ready to finish the sortie.</p>',
+            {
+              highlight: 'beacon',
+              onDismiss: () => markTutorial('countdownCallout')
+            }
+          );
+        } else {
+          showToast('Extraction Countdown', 'Hold the zone until the dropship arrives.', 'is-info');
+        }
+        break;
+      }
+      case 'countdown-abort': {
+        if (!isTutorialComplete('extractionFail')) {
+          showTutorialOverlay(
+            'Extraction Aborted',
+            '<p>The countdown stopped because readiness dropped. Make sure the whole squad toggles Ready and regroup at the beacon.</p>',
+            {
+              highlight: 'ready',
+              onDismiss: () => markTutorial('extractionFail')
+            }
+          );
+        } else {
+          showToast('Extraction Aborted', 'Readiness dropped—regroup and ready up.', 'is-warning');
+        }
+        break;
+      }
+      case 'success': {
+        hideTutorialOverlay();
+        showToast('Extraction Successful', 'Debrief incoming…', 'is-success');
+        break;
+      }
+    }
+  }
+
+  function handleMutatorActivated(event: MutatorActivatedMessage): void {
+    const { daily, weekly } = event.mutators;
+    showToast(`Daily Mutator: ${daily.name}`, daily.impactSummary, 'is-mutator');
+    const timeout = window.setTimeout(() => {
+      showToast(`Weekly Mutator: ${weekly.name}`, weekly.impactSummary, 'is-mutator');
+    }, 2800);
+    delayedTasks.push(timeout);
   }
 
   function showPingAlert(message: QuickPingBroadcastMessage, isLocal: boolean): void {
@@ -971,6 +1646,12 @@ export function createHud(parent: HTMLElement, options: HudOptions = {}): Hud {
   function dispose(): void {
     audio.dispose();
     readyButton.removeEventListener('click', handleReadyClick);
+    tutorialDismiss.removeEventListener('click', handleTutorialDismiss);
+    tutorialOverlay.removeEventListener('click', handleTutorialOverlayClick);
+    window.removeEventListener('keydown', handleTutorialKey);
+    sortieInfoButton.removeEventListener('click', handleSortieInfoClick);
+    hideTutorialOverlay(true);
+    hideRunSummaryOverlay();
     root.remove();
     window.removeEventListener('keydown', handleLevelUpKey);
     if (toastTimer !== null) {
@@ -978,6 +1659,9 @@ export function createHud(parent: HTMLElement, options: HudOptions = {}): Hud {
       toastTimer = null;
     }
     for (const timeout of pingTimeouts) {
+      window.clearTimeout(timeout);
+    }
+    for (const timeout of delayedTasks) {
       window.clearTimeout(timeout);
     }
     hideBossBanner();
@@ -991,6 +1675,8 @@ export function createHud(parent: HTMLElement, options: HudOptions = {}): Hud {
     clearLevelUp,
     showAugmentToast,
     showBossSpawn,
+    handleExtractionEvent,
+    handleMutatorActivated,
     showPingAlert,
     beginPingSelection,
     updatePingCursor,

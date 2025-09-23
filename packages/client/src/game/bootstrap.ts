@@ -23,6 +23,7 @@ import {
   NearestFilter,
   OrthographicCamera,
   PlaneGeometry,
+  DoubleSide,
   TorusGeometry,
   Points,
   PointsMaterial,
@@ -46,7 +47,8 @@ import type {
   WorldSnapshot,
   LevelUpOfferMessage,
   QuickPingKind,
-  GamePhase
+  GamePhase,
+  Vector2D
 } from '@farsight/shared';
 import { createInitialInputState } from '@farsight/shared';
 import { ARTIFACT_TTL, PLAYER_HURT_FLASH_TIME, PROJECTILE_LIFETIME, TILE_SIZE, TICK_RATE } from '@farsight/shared';
@@ -282,6 +284,39 @@ export async function bootstrapGame(): Promise<void> {
     const intensity = Math.min(1, snapshot.enemies.length / (playerCount * 8));
     audio.setIntensity(intensity);
   });
+  const detachExtraction = network.onExtractionEvent((event) => {
+    hud.handleExtractionEvent(event);
+    switch (event.event) {
+      case 'available': {
+        if (event.position) {
+          worldRenderer.setExtractionBeacon(event.position, 'available');
+        } else {
+          worldRenderer.setExtractionBeacon(null, 'available');
+        }
+        audio.playExtractionReady();
+        break;
+      }
+      case 'countdown-start': {
+        worldRenderer.setExtractionBeacon(event.position ?? null, 'countdown');
+        audio.playExtractionReady();
+        break;
+      }
+      case 'countdown-abort': {
+        worldRenderer.setExtractionBeacon(null, 'available');
+        audio.playExtractionAbort();
+        break;
+      }
+      case 'success': {
+        worldRenderer.triggerExtractionSuccess();
+        audio.playExtractionComplete();
+        break;
+      }
+    }
+  });
+  const detachMutator = network.onMutatorActivated((message) => {
+    hud.handleMutatorActivated(message);
+    audio.playMutatorChime();
+  });
   detachLevelUp = network.onLevelUpOffer((offer) => {
     if (offer.playerId !== network.getPlayerId()) {
       return;
@@ -334,6 +369,8 @@ export async function bootstrapGame(): Promise<void> {
     detachAugment?.();
     detachBoss?.();
     detachQuickPing();
+    detachExtraction();
+    detachMutator();
     liveArmoryState = null;
     currentPhase = 'combat';
     inputController.setEnabled(true);
@@ -345,6 +382,7 @@ export async function bootstrapGame(): Promise<void> {
     detachLevelUp = null;
     detachAugment = null;
     detachBoss = null;
+    worldRenderer.clearExtractionBeacon();
   });
 
   const serverUrl = getServerUrl();
@@ -612,6 +650,119 @@ function createDisplayName(): string {
   return `${adjective}${noun}${number}`;
 }
 
+class ExtractionBeacon {
+  readonly group = new Group();
+  private readonly pad: Mesh;
+  private readonly glow: Mesh;
+  private readonly beam: Mesh;
+  private readonly beamMaterial: MeshBasicMaterial;
+  private readonly glowMaterial: MeshBasicMaterial;
+  private readonly padMaterial: MeshBasicMaterial;
+  private state: 'available' | 'countdown' = 'available';
+  private time = 0;
+  private successTimer = 0;
+  private readonly position = new Vector2();
+
+  constructor(parent: Group) {
+    this.padMaterial = new MeshBasicMaterial({ color: 0x1e293b, transparent: true, opacity: 0.88 });
+    this.pad = new Mesh(new CylinderGeometry(26, 26, 2, 32), this.padMaterial);
+    this.pad.position.y = 1;
+    this.pad.renderOrder = 1;
+    this.group.add(this.pad);
+
+    const glowTexture = createRadialTexture(
+      'rgba(148, 241, 255, 0.55)',
+      'rgba(56, 189, 248, 0.22)',
+      'rgba(8, 13, 23, 0)'
+    );
+    glowTexture.needsUpdate = true;
+    this.glowMaterial = new MeshBasicMaterial({
+      map: glowTexture,
+      transparent: true,
+      depthWrite: false,
+      blending: AdditiveBlending,
+      opacity: 0.85
+    });
+    const glowGeometry = new PlaneGeometry(92, 92);
+    glowGeometry.rotateX(-Math.PI / 2);
+    this.glow = new Mesh(glowGeometry, this.glowMaterial);
+    this.glow.position.y = 0.1;
+    this.glow.renderOrder = 1;
+    this.group.add(this.glow);
+
+    const beamGeometry = new CylinderGeometry(9, 16, 220, 24, 1, true);
+    this.beamMaterial = new MeshBasicMaterial({
+      color: 0x60a5fa,
+      transparent: true,
+      opacity: 0.32,
+      side: DoubleSide,
+      depthWrite: false,
+      blending: AdditiveBlending
+    });
+    this.beam = new Mesh(beamGeometry, this.beamMaterial);
+    this.beam.position.y = 110;
+    this.beam.renderOrder = 1;
+    this.group.add(this.beam);
+
+    this.group.visible = false;
+    parent.add(this.group);
+  }
+
+  setState(position: Vector2D | null, state: 'available' | 'countdown'): void {
+    if (!position && !this.group.visible) {
+      return;
+    }
+    if (position) {
+      this.position.set(position.x, position.y);
+      this.group.position.set(position.x, 0, position.y);
+    }
+    this.state = state;
+    this.group.visible = true;
+    this.time = 0;
+    this.successTimer = 0;
+    this.beamMaterial.opacity = state === 'countdown' ? 0.42 : 0.28;
+    this.glowMaterial.opacity = state === 'countdown' ? 1 : 0.85;
+  }
+
+  clear(): void {
+    this.group.visible = false;
+    this.successTimer = 0;
+  }
+
+  triggerSuccess(): void {
+    if (!this.group.visible) {
+      return;
+    }
+    this.successTimer = 1.2;
+  }
+
+  getPosition(): Vector2 | null {
+    return this.group.visible ? this.position.clone() : null;
+  }
+
+  update(deltaSeconds: number): void {
+    if (!this.group.visible) {
+      return;
+    }
+    this.time += deltaSeconds;
+    const pulse = 1 + Math.sin(this.time * 3) * 0.12;
+    this.glow.scale.setScalar(pulse);
+    this.padMaterial.opacity = this.state === 'countdown' ? 0.95 : 0.8;
+    const beamPulse = this.state === 'countdown' ? 0.22 + Math.sin(this.time * 6) * 0.12 : 0.16;
+    this.beamMaterial.opacity = this.state === 'countdown' ? 0.45 + beamPulse : 0.28 + beamPulse * 0.5;
+
+    if (this.successTimer > 0) {
+      this.successTimer = Math.max(0, this.successTimer - deltaSeconds);
+      const ratio = 1 - this.successTimer / 1.2;
+      this.glow.scale.setScalar(1.4 + ratio * 1.6);
+      this.beamMaterial.opacity = Math.max(0, 0.4 - ratio * 0.35);
+      if (this.successTimer === 0) {
+        this.clear();
+      }
+    }
+  }
+}
+
 class WorldRenderer {
   private readonly sceneGroup = new Group();
   private readonly players = new Map<string, PlayerAvatar>();
@@ -629,6 +780,7 @@ class WorldRenderer {
   private readonly enemyPool: EnemyAvatar[] = [];
   private readonly projectilePool: ProjectileAvatar[] = [];
   private localPlayerId: string | null = null;
+  private readonly extractionBeacon = new ExtractionBeacon(this.sceneGroup);
 
   constructor(scene: Scene) {
     scene.add(this.decor.group);
@@ -825,6 +977,7 @@ class WorldRenderer {
     }
     this.impactSystem.update(deltaSeconds);
     this.pulseSystem.update(deltaSeconds);
+    this.extractionBeacon.update(deltaSeconds);
   }
 
   spawnPing(x: number, y: number, kind: QuickPingKind, isLocal: boolean): void {
@@ -896,6 +1049,23 @@ class WorldRenderer {
     this.artifacts.clear();
     this.impactSystem.clear();
     this.pulseSystem.clear();
+    this.extractionBeacon.clear();
+  }
+
+  setExtractionBeacon(position: Vector2D | null, mode: 'available' | 'countdown'): void {
+    this.extractionBeacon.setState(position, mode);
+  }
+
+  clearExtractionBeacon(): void {
+    this.extractionBeacon.clear();
+  }
+
+  triggerExtractionSuccess(): void {
+    const position = this.extractionBeacon.getPosition();
+    if (position) {
+      this.pulseSystem.spawn(position.x, position.y, 0x38bdf8);
+    }
+    this.extractionBeacon.triggerSuccess();
   }
 }
 

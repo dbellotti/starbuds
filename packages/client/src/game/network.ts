@@ -23,7 +23,9 @@ import {
   ArmoryItem,
   ReadyContext,
   WorldSnapshotDelta,
-  EntityDelta
+  EntityDelta,
+  ExtractionEventMessage,
+  MutatorActivatedMessage
 } from '@farsight/shared';
 
 export type SnapshotListener = (snapshot: WorldSnapshot) => void;
@@ -34,6 +36,8 @@ export type AugmentAppliedListener = (message: AugmentAppliedMessage) => void;
 export type BossSpawnListener = (message: BossSpawnedMessage) => void;
 export type PingEventListener = (message: QuickPingBroadcastMessage) => void;
 export type ArmoryStateListener = (state: ArmoryState) => void;
+export type ExtractionEventListener = (event: ExtractionEventMessage) => void;
+export type MutatorActivatedListener = (event: MutatorActivatedMessage) => void;
 
 interface WelcomeState {
   playerId: string;
@@ -61,6 +65,8 @@ export class GameNetwork {
   private readonly bossListeners = new Set<BossSpawnListener>();
   private readonly quickPingListeners = new Set<PingEventListener>();
   private readonly armoryListeners = new Set<ArmoryStateListener>();
+  private readonly extractionListeners = new Set<ExtractionEventListener>();
+  private readonly mutatorListeners = new Set<MutatorActivatedListener>();
   private inputSequence = 0;
   private pingTimer: number | null = null;
   private latestPingMs = 0;
@@ -203,6 +209,16 @@ export class GameNetwork {
       listener(this.armory);
     }
     return () => this.armoryListeners.delete(listener);
+  }
+
+  onExtractionEvent(listener: ExtractionEventListener): () => void {
+    this.extractionListeners.add(listener);
+    return () => this.extractionListeners.delete(listener);
+  }
+
+  onMutatorActivated(listener: MutatorActivatedListener): () => void {
+    this.mutatorListeners.add(listener);
+    return () => this.mutatorListeners.delete(listener);
   }
 
   sendInput(state: InputMessage['state']): void {
@@ -429,6 +445,19 @@ export class GameNetwork {
         this.emitArmoryState(message.state);
         break;
       }
+      case 'extraction-event': {
+        this.applyExtractionEvent(message);
+        for (const listener of this.extractionListeners) {
+          listener(message);
+        }
+        break;
+      }
+      case 'mutator-activated': {
+        for (const listener of this.mutatorListeners) {
+          listener(message);
+        }
+        break;
+      }
       case 'welcome': {
         // Already handled in connect promise
         break;
@@ -472,6 +501,42 @@ export class GameNetwork {
   private emitArmoryState(state: ArmoryState): void {
     for (const listener of this.armoryListeners) {
       listener(state);
+    }
+  }
+
+  private applyExtractionEvent(event: ExtractionEventMessage): void {
+    if (!this.latestObjectives) {
+      return;
+    }
+    const next: ObjectiveState = { ...this.latestObjectives };
+    switch (event.event) {
+      case 'available': {
+        next.extractionReady = true;
+        next.extractionCountdown = null;
+        next.extractionPosition = event.position;
+        break;
+      }
+      case 'countdown-start': {
+        next.extractionReady = true;
+        next.extractionCountdown = event.countdown;
+        if (event.position) {
+          next.extractionPosition = event.position;
+        }
+        break;
+      }
+      case 'countdown-abort': {
+        next.extractionCountdown = null;
+        break;
+      }
+      case 'success': {
+        next.extractionReady = false;
+        next.extractionCountdown = null;
+        break;
+      }
+    }
+    this.latestObjectives = next;
+    if (this.latestSnapshot) {
+      this.latestSnapshot = { ...this.latestSnapshot, objectives: next };
     }
   }
 }

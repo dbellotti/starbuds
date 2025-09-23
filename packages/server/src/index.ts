@@ -57,7 +57,9 @@ import {
   MutatorCadence,
   PlayerArmoryState,
   EntityDelta,
-  WorldSnapshotDelta
+  WorldSnapshotDelta,
+  RunSummary,
+  RunSummaryPlayer
 } from '@farsight/shared';
 
 const TICK_INTERVAL_MS = 1000 / TICK_RATE;
@@ -135,23 +137,6 @@ type ArtifactDropSimState = {
 type WorldEvent =
   | { type: 'broadcast'; message: ServerMessage }
   | { type: 'target'; targetId: string; message: ServerMessage };
-
-interface PlayerRunSummary {
-  id: string;
-  displayName: string;
-  psychicLevel: number;
-  augments: AugmentId[];
-  artifacts: ArtifactKind[];
-  damageTaken: number;
-  xpCollected: number;
-}
-
-interface RunSummary {
-  tick: number;
-  wave: number;
-  totalKills: number;
-  playerStats: PlayerRunSummary[];
-}
 
 interface ArmoryPlayerMeta {
   id: string;
@@ -359,6 +344,8 @@ class ArmoryManager {
   private readonly players = new Map<string, ArmoryPlayerMeta>();
   private mutators: ActiveMutators = generateActiveMutators();
   private lastMutatorCheck = Date.now();
+  private summary: RunSummary | null = null;
+  private summaryEndsAt: number | null = null;
 
   ensurePlayer(id: string, displayName: string): ArmoryPlayerMeta {
     let player = this.players.get(id);
@@ -451,6 +438,11 @@ class ArmoryManager {
       this.grantFeathers(player.id, baseReward + xpBonus + artifactBonus);
       player.ready = false;
     }
+  }
+
+  setSummary(summary: RunSummary | null, endsAt: number | null): void {
+    this.summary = summary;
+    this.summaryEndsAt = endsAt;
   }
 
   purchase(id: string, itemId: string): { success: boolean; error?: string } {
@@ -588,7 +580,9 @@ class ArmoryManager {
       cosmetics: ARMORY_COSMETICS,
       players,
       runNumber,
-      updatedAt: Date.now()
+      updatedAt: Date.now(),
+      summary: this.summary,
+      summaryEndsAt: this.summaryEndsAt
     };
   }
 }
@@ -802,10 +796,15 @@ class GameWorld {
     if (!this.extractionReady) {
       return;
     }
+    const wasCountingDown = this.extractionCountdown !== null;
     if (this.areAllPlayersReady()) {
       if (this.extractionCountdown === null) {
         this.extractionCountdown = 35;
+        this.emitExtractionEvent('countdown-start');
       }
+    } else if (wasCountingDown) {
+      this.extractionCountdown = null;
+      this.emitExtractionEvent('countdown-abort');
     } else {
       this.extractionCountdown = null;
     }
@@ -851,6 +850,20 @@ class GameWorld {
     };
   }
 
+  private emitExtractionEvent(event: 'available' | 'countdown-start' | 'countdown-abort' | 'success'): void {
+    this.events.push({
+      type: 'broadcast',
+      message: {
+        type: 'extraction-event',
+        event,
+        position: this.extractionPosition
+          ? { x: this.extractionPosition.x, y: this.extractionPosition.y }
+          : null,
+        countdown: this.extractionCountdown
+      }
+    });
+  }
+
   private updateObjectives(deltaSeconds: number): void {
     if (this.players.size === 0) {
       this.extractionCountdown = null;
@@ -862,10 +875,12 @@ class GameWorld {
     if (this.extractionCountdown !== null) {
       if (!this.areAllPlayersReady()) {
         this.extractionCountdown = null;
+        this.emitExtractionEvent('countdown-abort');
       } else {
         const previous = this.extractionCountdown;
         this.extractionCountdown = Math.max(0, this.extractionCountdown - deltaSeconds);
         if (previous > 0 && this.extractionCountdown === 0) {
+          this.emitExtractionEvent('success');
           this.extractionCountdown = null;
           this.extractionReady = false;
           this.queueRunSummary();
@@ -904,7 +919,7 @@ class GameWorld {
   }
 
   private buildRunSummary(): RunSummary {
-    const playerStats: PlayerRunSummary[] = [];
+    const playerStats: RunSummaryPlayer[] = [];
     for (const player of this.players.values()) {
       playerStats.push({
         id: player.id,
@@ -917,7 +932,7 @@ class GameWorld {
       });
     }
     return {
-      tick: this.tick,
+      durationTicks: this.tick,
       wave: this.waveNumber,
       totalKills: this.totalKills,
       playerStats
@@ -1837,6 +1852,10 @@ class GameWorld {
       this.killsPerWave = Math.round(this.killsPerWave * 1.18 + 6);
       if (!this.extractionReady && this.waveNumber >= 3) {
         this.extractionReady = true;
+        if (this.extractionPosition === null) {
+          this.extractionPosition = this.pickExtractionPoint();
+        }
+        this.emitExtractionEvent('available');
       }
     }
   }
@@ -2101,6 +2120,10 @@ setInterval(() => {
 
   if (armory.refreshMutators()) {
     broadcastArmoryState();
+    broadcast({
+      type: 'mutator-activated',
+      mutators: armory.getMutators()
+    });
   }
 }, TICK_INTERVAL_MS);
 
@@ -2449,6 +2472,7 @@ function computeVelocity(input: PlayerInputState): { x: number; y: number } {
 
 function handleRunSummary(summary: RunSummary): void {
   armory.grantRunRewards(summary);
+  armory.setSummary(summary, Date.now() + SUMMARY_HOLD_MS);
   sessionPhase = 'summary';
   pausedForArmory = true;
   if (armoryTransitionTimer) {
@@ -2468,6 +2492,7 @@ function enterArmoryStage(): void {
   pausedForArmory = true;
   runNumber += 1;
   armory.resetReady();
+  armory.setSummary(null, null);
   world.resetForArmory((player) => armory.applyLoadout(player, world));
   latestSnapshot = null;
   broadcastArmoryState();
@@ -2487,6 +2512,10 @@ function startNextRun(): void {
   }
   latestSnapshot = null;
   broadcastArmoryState(armory.buildState(sessionPhase, runNumber));
+  broadcast({
+    type: 'mutator-activated',
+    mutators: armory.getMutators()
+  });
 }
 
 function broadcastArmoryState(state: ArmoryState = armory.buildState(sessionPhase, runNumber)): void {

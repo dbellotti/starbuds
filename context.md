@@ -18,6 +18,7 @@
 - Feedback: HUD now surfaces mutators, armory rosters, inventory cards, and a unified ready button. Cinematic camera zooms highlight level-ups and boss drops; soundtrack layers mix phase ambience with combat intensity.
 - Rendering & perf: Client reconstructs world snapshots from deltas and culls off-screen enemies/projectiles. Snapshot compression cuts network usage, and cosmetics hook remains TODO for visual feedback.
 - Tooling: `npm run matchmaking:test` exercises reconnect + ready flow, `npm run replay:inputs` replays recorded input traces, and bundle budgets fail the build if Vite chunks exceed limits.
+- UX polish (Milestone 5 in progress): Centered armory overlay, tutorial helpers, loadout chips, extraction beacon VFX/audio, mutator toasts, and the post-run debrief overlay are live; remaining follow-ups are tracked in `docs/milestone-5-ux-audit.md`.
 
 **Baseline Polish (completed)**
 - Visual: Procedural chicken/enemy textures, additive projectile trails, pooled impact bursts, and harm flicker tuning.
@@ -40,7 +41,7 @@
 2. Telemetry dashboards: stream aggregated outputs into Grafana/observable for playtest nights once `telemetry:summary` is battle-tested.
 3. Performance: downstream work to surface cosmetics client-side and profile mutator-heavy runs; verify bundle budgets can expand with future assets.
 4. Networking/QA: fold `matchmaking:test` + `replay:inputs` into CI once snapshots are stabilized; expose cosmetic selections in snapshots for UI validation.
-5. Meta planning: Milestone 5 polish—bring cosmetic visuals online, surface armory loadout summaries, and wire telemetry dashboards to the new currency loop.
+5. Meta planning: Finalize Milestone 5 follow-ups—art-driven cosmetic rigs in the hangar, shader/VO polish, telemetry taps for the new debrief, and QA automation for the tutorial/extraction flow (see `docs/milestone-5-ux-audit.md`).
 
 **Key Files (post-commit)**
 - Shared schema: `packages/shared/src/index.ts`

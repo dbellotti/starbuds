@@ -4,6 +4,10 @@ export interface AudioController {
   prime(): void;
   playLevelUp(): void;
   playBossSpawn(): void;
+  playExtractionReady(): void;
+  playExtractionAbort(): void;
+  playExtractionComplete(): void;
+  playMutatorChime(): void;
   setIntensity(level: number): void;
   setPhase(phase: GamePhase): void;
   dispose(): void;
@@ -193,6 +197,22 @@ export function createAudioController(): AudioController {
     playBossSpawn(): void {
       playTone(140, 0.5, 'sawtooth', 0.2);
       window.setTimeout(() => playSweep(220, 110, 0.45, 0.12), 80);
+    },
+    playExtractionReady(): void {
+      playSweep(320, 520, 0.4, 0.14);
+      window.setTimeout(() => playTone(640, 0.18, 'triangle', 0.08), 110);
+    },
+    playExtractionAbort(): void {
+      playSweep(420, 260, 0.32, 0.12);
+      window.setTimeout(() => playTone(180, 0.25, 'square', 0.06), 90);
+    },
+    playExtractionComplete(): void {
+      playTone(520, 0.22, 'square', 0.12);
+      window.setTimeout(() => playSweep(520, 780, 0.4, 0.1), 120);
+    },
+    playMutatorChime(): void {
+      playTone(720, 0.2, 'triangle', 0.1);
+      window.setTimeout(() => playTone(540, 0.18, 'sawtooth', 0.08), 140);
     },
     setIntensity(level: number): void {
       targetIntensity = Math.max(0, Math.min(level, 1));

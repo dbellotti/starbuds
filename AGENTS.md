@@ -10,6 +10,7 @@
 - `docs/art-style.md` collects texture + low-poly direction; skim before shipping new biome work.
 - Client camera/debug hotkeys live in `packages/client/src/game/bootstrap.ts`; remember Key `V` toggles view and the HUD tip mirrors expectations.
 - Level-up UI and toast feedback are owned by `packages/client/src/game/hud.ts`; prefer calling its helpers (`presentLevelUp`, `showAugmentToast`, `showBossSpawn`) instead of manipulating DOM directly. Build and artifact indicators also live here—update the HUD helpers when adding new VFX/UI signals.
+- Armory HUD logic lives in `packages/client/src/game/hud.ts` with styling in `packages/client/src/style.css`; the milestone 5 pass centers the overlay, adds preview stages via hover/focus events, and is documented in `docs/milestone-5-ux-audit.md`.
 
 ## Build, Test, and Development Commands
 - `npm run dev --workspace=@farsight/server`: starts the tick loop and websocket server (respects `LEVEL_SEED`).
@@ -41,6 +42,8 @@
 - Use deterministic seeds (`LEVEL_SEED=123`) when reproducing bugs.
 - Leverage the in-game debug overlay (FPS, ping, tick drift) to verify performance budgets during playtests.
 - For quick confidence, `npm run smoke` hits the authoritative server with a headless bot, and `npm run perf:fps` reports short FPS samples after a cold start.
+- When verifying the armory UX, check that hovering/focusing upgrade or cosmetic cards updates the central preview and readiness hint, matching the checklist in `docs/milestone-5-ux-audit.md`.
+- New armory/tutorial/extraction beats ship with the Milestone 5 pass—use `docs/milestone-5-ux-audit.md` as the regression checklist (tutorial overlays, extraction beacon VFX/audio, mutator toasts, post-run debrief).
 
 ## Commit & Pull Request Guidelines
 - Commit messages: through and explanatory but concise.
