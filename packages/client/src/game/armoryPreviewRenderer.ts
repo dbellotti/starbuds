@@ -1,5 +1,6 @@
 import {
   AmbientLight,
+  Box3,
   Color,
   DirectionalLight,
   Group,
@@ -42,6 +43,12 @@ export class ArmoryPreviewRenderer {
   private readonly resizeObserver: ResizeObserver;
   private readonly handleVisibilityChange: () => void;
   private readonly audio: AudioController | undefined;
+  private readonly rigBounds = new Box3();
+  private readonly boundCenter = new Vector3();
+  private readonly boundSize = new Vector3();
+  private readonly lookTarget = new Vector3();
+  private readonly tempRootPosition = new Vector3();
+  private readonly targetCenterY = 4.5;
 
   private running = false;
   private visible = true;
@@ -62,9 +69,7 @@ export class ArmoryPreviewRenderer {
     this.canvas = this.renderer.domElement;
     this.canvas.classList.add('hud-armory-preview-canvas');
 
-    this.camera = new PerspectiveCamera(34, 1, 0.1, 100);
-    this.camera.position.set(0, 9.8, 24);
-    this.camera.lookAt(new Vector3(0, 6.2, 0));
+    this.camera = new PerspectiveCamera(30, 1, 0.1, 100);
 
     this.scene = new Scene();
     const ambient = new AmbientLight(0xffffff, 0.78);
@@ -77,16 +82,17 @@ export class ArmoryPreviewRenderer {
     this.scene.add(rimLight);
 
     this.root = new Group();
-    this.root.position.set(0, -3.5, 0);
     this.scene.add(this.root);
 
-    this.rigInstance = buildBaseChickenRig({ primaryColor: DEFAULT_TINT, scale: 0.78 });
+    this.rigInstance = buildBaseChickenRig({ primaryColor: DEFAULT_TINT, scale: 0.66 });
     this.rigInstance.group.rotation.y = Math.PI / 6;
     this.root.add(this.rigInstance.group);
 
     this.effects = new ArmoryEffects();
     this.effects.group.position.set(0, 0, 0);
     this.root.add(this.effects.group);
+
+    this.calibrateView();
 
     this.resizeObserver = new ResizeObserver(() => {
       this.resize();
@@ -224,15 +230,45 @@ export class ArmoryPreviewRenderer {
       this.currentCosmetic = null;
     }
     if (!id) {
+      this.calibrateView();
       return;
     }
     const attachment = createCosmeticAttachment(id, { tint: this.currentTint });
     if (!attachment) {
+      this.calibrateView();
       return;
     }
     this.positionAttachment(attachment);
     this.rigInstance.group.add(attachment);
     this.currentCosmetic = { id, group: attachment };
+    this.calibrateView();
+  }
+
+  private calibrateView(): void {
+    this.tempRootPosition.copy(this.root.position);
+    this.root.position.set(0, 0, 0);
+    this.root.updateMatrixWorld(true);
+    this.rigInstance.group.updateWorldMatrix(true, true);
+    this.rigBounds.setFromObject(this.rigInstance.group);
+    if (!Number.isFinite(this.rigBounds.min.y) || !Number.isFinite(this.rigBounds.max.y)) {
+      this.root.position.copy(this.tempRootPosition);
+      this.root.updateMatrixWorld(true);
+      return;
+    }
+    this.rigBounds.getCenter(this.boundCenter);
+    this.rigBounds.getSize(this.boundSize);
+
+    this.root.position.set(-this.boundCenter.x, this.targetCenterY - this.boundCenter.y, -this.boundCenter.z);
+    this.root.updateMatrixWorld(true);
+
+    const paddedHeight = Math.max(this.boundSize.y, 6);
+    const distance = Math.max(26, paddedHeight * 3.1);
+    const cameraHeight = this.targetCenterY + paddedHeight * 0.62;
+
+    this.camera.position.set(0, cameraHeight, distance);
+    this.lookTarget.set(0, this.targetCenterY, 0);
+    this.camera.lookAt(this.lookTarget);
+    this.camera.updateProjectionMatrix();
   }
 
   private positionAttachment(group: Group): void {

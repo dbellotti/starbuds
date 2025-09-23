@@ -17,6 +17,7 @@
     "matchmaking:test": "tsx scripts/matchmaking-harness.ts",
     "smoke": "node scripts/smoke-test.mjs",
     "perf:fps": "node scripts/perf-metrics.mjs",
+    "armory:capture": "node scripts/capture-armory-preview.mjs",
     "telemetry:summary": "node scripts/telemetry-summary.mjs"
   },
   "devDependencies": {

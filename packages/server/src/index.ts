@@ -65,6 +65,7 @@ import type {
 
 const TICK_INTERVAL_MS = 1000 / TICK_RATE;
 const PORT = Number(process.env.PORT ?? 7777);
+const HOST = process.env.HOST ?? '0.0.0.0';
 const LEVEL_CONFIG = {
   width: 96,
   height: 96,
@@ -2075,8 +2076,8 @@ wss.on('connection', (socket) => {
   });
 });
 
-httpServer.listen(PORT, () => {
-  console.log(`Farsight server listening on :${PORT}`);
+httpServer.listen(PORT, HOST, () => {
+  console.log(`Farsight server listening on ${HOST}:${PORT}`);
 });
 
 setInterval(() => {
