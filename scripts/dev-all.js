@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 const { spawn } = require('node:child_process');
+const { readFileSync } = require('node:fs');
+const { resolve } = require('node:path');
 
 const tasks = [
   { name: 'server', command: ['npm', 'run', 'dev', '--workspace=@farsight/server'] },
@@ -9,8 +11,42 @@ const tasks = [
 const children = new Map();
 let shuttingDown = false;
 
+loadRootEnv();
+
 function log(name, message) {
   process.stdout.write(`[${name}] ${message}\n`);
+}
+
+function loadRootEnv() {
+  const envPath = resolve(process.cwd(), '.env');
+  let contents;
+  try {
+    contents = readFileSync(envPath, 'utf8');
+  } catch (error) {
+    if (error.code === 'ENOENT') {
+      return;
+    }
+    throw error;
+  }
+  for (const rawLine of contents.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line || line.startsWith('#')) {
+      continue;
+    }
+    const equalsIndex = line.indexOf('=');
+    if (equalsIndex === -1) {
+      continue;
+    }
+    const key = line.slice(0, equalsIndex).trim();
+    if (!key || key.startsWith('#') || Object.prototype.hasOwnProperty.call(process.env, key)) {
+      continue;
+    }
+    let value = line.slice(equalsIndex + 1).trim();
+    if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
+      value = value.slice(1, -1);
+    }
+    process.env[key] = value;
+  }
 }
 
 function spawnTask(task) {

@@ -1,4 +1,16 @@
-import { Color, ConeGeometry, Group, Mesh, MeshStandardMaterial, SphereGeometry, TorusGeometry, Vector3 } from 'three';
+import {
+  BoxGeometry,
+  Color,
+  ConeGeometry,
+  CylinderGeometry,
+  Group,
+  Mesh,
+  MeshStandardMaterial,
+  OctahedronGeometry,
+  SphereGeometry,
+  TorusGeometry,
+  Vector3
+} from 'three';
 
 type Disposable = { dispose: () => void };
 
@@ -18,13 +30,15 @@ export type ChickenRig = {
   leftWing: Mesh;
   rightWing: Mesh;
   head: Mesh;
-  tail: Mesh;
-  crest: Mesh;
+  tail: Group;
+  crest: Group;
   base: {
     leftWingZ: number;
     rightWingZ: number;
     headX: number;
     tailX: number;
+    tailY: number;
+    tailZ: number;
   };
 };
 
@@ -42,9 +56,35 @@ export interface ChickenRigInstance {
   dispose: () => void;
 }
 
-const DEFAULT_PRIMARY = 0xfacc15;
-const DEFAULT_CREST = 0xf87171;
-const DEFAULT_BEAK = 0xf97316;
+const DEFAULT_PRIMARY = 0xf1b546;
+const DEFAULT_CREST = 0xdc3626;
+const DEFAULT_BEAK = 0xf47a1d;
+const DEFAULT_HEADBAND = 0x6f3b1e;
+const DEFAULT_WATTLE = 0xd23a2b;
+const DEFAULT_EYE_WHITE = 0xfffae3;
+const DEFAULT_EYE_ACCENT = 0x3b1f10;
+const DEFAULT_PUPIL = 0x1a0e07;
+const DEFAULT_LEG = 0xf4731b;
+const DEFAULT_GEM = 0x38cffa;
+
+function createMaterial(
+  tracked: Set<Disposable>,
+  color: number,
+  options: { roughness?: number; metalness?: number; emissive?: number; emissiveIntensity?: number } = {}
+): MeshStandardMaterial {
+  const material = trackDisposable(
+    tracked,
+    new MeshStandardMaterial({
+      color,
+      roughness: options.roughness ?? 0.72,
+      metalness: options.metalness ?? 0.05,
+      emissive: options.emissive !== undefined ? new Color(options.emissive) : undefined,
+      emissiveIntensity: options.emissiveIntensity,
+      flatShading: true
+    })
+  );
+  return material;
+}
 
 export function buildBaseChickenRig(options: ChickenRigOptions = {}): ChickenRigInstance {
   const {
@@ -60,87 +100,184 @@ export function buildBaseChickenRig(options: ChickenRigOptions = {}): ChickenRig
   group.scale.setScalar(scale);
   group.rotation.z = idleTilt;
 
-  const bodyMaterial = trackDisposable(
-    tracked,
-    new MeshStandardMaterial({
-      color: primaryColor,
-      roughness: 0.55,
-      metalness: 0.12
-    })
-  );
-  const body = new Mesh(trackDisposable(tracked, new SphereGeometry(7.2, 12, 12)), bodyMaterial);
-  body.position.y = 6;
+  const bodyMaterial = createMaterial(tracked, primaryColor, { roughness: 0.68, metalness: 0.04 });
+  const bodyGeometry = trackDisposable(tracked, new SphereGeometry(5, 6, 4));
+  bodyGeometry.scale(1.28, 0.92, 1.15);
+  const body = new Mesh(bodyGeometry, bodyMaterial);
+  body.position.set(0, 5.6, 1.1);
   body.userData.tint = true;
   group.add(body);
 
-  const tailMaterial = bodyMaterial.clone();
-  trackDisposable(tracked, tailMaterial);
-  const tail = new Mesh(trackDisposable(tracked, new ConeGeometry(3.2, 6, 6, 1)), tailMaterial);
-  tail.rotation.x = -Math.PI / 2;
-  tail.position.set(0, 4.5, -6.5);
-  tail.userData.tint = true;
-  group.add(tail);
+  const bellyGeometry = bodyGeometry.clone();
+  bellyGeometry.scale(0.92, 0.86, 0.9);
+  const bellyMaterial = createMaterial(tracked, new Color(primaryColor).offsetHSL(-0.02, -0.05, 0.12).getHex(), {
+    roughness: 0.7,
+    metalness: 0.03
+  });
+  const belly = new Mesh(bellyGeometry, bellyMaterial);
+  belly.position.set(0, 4.9, 2.2);
+  group.add(belly);
 
-  const wingMaterial = bodyMaterial.clone();
-  trackDisposable(tracked, wingMaterial);
-  const wingGeometry = trackDisposable(tracked, new ConeGeometry(2.8, 5.4, 5, 1));
+  const tailMaterial = createMaterial(tracked, primaryColor, { roughness: 0.7, metalness: 0.04 });
+  const tail = new Group();
+  tail.position.set(0, 6.1, -3.8);
+  group.add(tail);
+  const tailFeatherGeometry = trackDisposable(tracked, new ConeGeometry(2.4, 3.2, 3));
+  const tailCenter = new Mesh(tailFeatherGeometry, tailMaterial);
+  tailCenter.rotation.x = -Math.PI / 2.1;
+  tailCenter.position.set(0, 0.2, -1.2);
+  tailCenter.userData.tint = true;
+  tail.add(tailCenter);
+  const tailLeft = tailCenter.clone();
+  tailLeft.rotation.y = Math.PI / 5.2;
+  tailLeft.position.set(1.4, 0.15, -1);
+  tailLeft.userData.tint = true;
+  tail.add(tailLeft);
+  const tailRight = tailCenter.clone();
+  tailRight.rotation.y = -Math.PI / 5.2;
+  tailRight.position.set(-1.4, 0.15, -1);
+  tailRight.userData.tint = true;
+  tail.add(tailRight);
+
+  const wingMaterial = createMaterial(tracked, primaryColor, { roughness: 0.7, metalness: 0.04 });
+  const wingGeometry = trackDisposable(tracked, new ConeGeometry(3.1, 3.8, 3));
   const leftWing = new Mesh(wingGeometry, wingMaterial);
-  leftWing.rotation.z = Math.PI / 2.2;
-  leftWing.position.set(5, 5.5, 0);
+  leftWing.rotation.set(Math.PI / 2.1, 0.15, Math.PI / 2.8);
+  leftWing.position.set(4.4, 6.2, 0.4);
   leftWing.userData.tint = true;
   group.add(leftWing);
 
   const rightWing = leftWing.clone();
+  rightWing.position.x = -leftWing.position.x;
+  rightWing.rotation.y = -leftWing.rotation.y;
+  rightWing.rotation.z = -leftWing.rotation.z;
   group.add(rightWing);
 
-  const headMaterial = trackDisposable(
-    tracked,
-    new MeshStandardMaterial({
-      color: 0xfff4d2,
-      roughness: 0.45,
-      metalness: 0.05
-    })
-  );
-  const head = new Mesh(trackDisposable(tracked, new SphereGeometry(4.2, 10, 10)), headMaterial);
-  head.position.set(0, 9.5, 4.5);
+  const headMaterial = createMaterial(tracked, 0xfff0d4, { roughness: 0.5, metalness: 0.04 });
+  const headGeometry = trackDisposable(tracked, new SphereGeometry(3.4, 6, 4));
+  headGeometry.scale(1.06, 0.84, 1.08);
+  const head = new Mesh(headGeometry, headMaterial);
+  head.position.set(0, 10.1, 3.4);
   group.add(head);
 
-  const beakMaterial = trackDisposable(
-    tracked,
-    new MeshStandardMaterial({
-      color: beakColor,
-      roughness: 0.4,
-      metalness: 0.1
-    })
-  );
-  const beak = new Mesh(trackDisposable(tracked, new ConeGeometry(1.8, 3.8, 6, 1)), beakMaterial);
+  const headbandMaterial = createMaterial(tracked, DEFAULT_HEADBAND, { roughness: 0.68, metalness: 0.06 });
+  const headband = new Mesh(trackDisposable(tracked, new CylinderGeometry(3.2, 3.2, 0.6, 6, 1, true)), headbandMaterial);
+  headband.rotation.x = Math.PI / 2;
+  headband.position.set(0, 10.3, 3.2);
+  headband.scale.set(1.02, 1, 0.86);
+  group.add(headband);
+
+  const beakMaterial = createMaterial(tracked, beakColor, { roughness: 0.55, metalness: 0.05 });
+  const beakGeometry = trackDisposable(tracked, new ConeGeometry(1.6, 3.2, 3));
+  const beak = new Mesh(beakGeometry, beakMaterial);
   beak.rotation.x = Math.PI / 2;
-  beak.position.set(0, 8.8, 8.2);
+  beak.position.set(0, 8.9, 7);
   group.add(beak);
 
-  const crestMaterial = trackDisposable(
-    tracked,
-    new MeshStandardMaterial({
-      color: crestColor,
-      roughness: 0.5,
-      metalness: 0.05
-    })
-  );
-  const crest = new Mesh(trackDisposable(tracked, new SphereGeometry(1.6, 6, 6)), crestMaterial);
-  crest.position.set(0, 11.2, 4.2);
-  crest.userData.tint = true;
-  group.add(crest);
+  const wattleMaterial = createMaterial(tracked, DEFAULT_WATTLE, { roughness: 0.6, metalness: 0.05 });
+  const wattle = new Mesh(trackDisposable(tracked, new ConeGeometry(1.05, 2.3, 4)), wattleMaterial);
+  wattle.rotation.x = Math.PI / 2;
+  wattle.position.set(0, 7.9, 6.5);
+  group.add(wattle);
 
-  const eyeMaterial = trackDisposable(
-    tracked,
-    new MeshStandardMaterial({ color: 0x0f172a, roughness: 0.4, metalness: 0.3 })
-  );
-  const eyeGeometry = trackDisposable(tracked, new SphereGeometry(0.8, 6, 6));
-  const leftEye = new Mesh(eyeGeometry, eyeMaterial);
-  leftEye.position.set(1.4, 9.4, 6.8);
+  const crestMaterial = createMaterial(tracked, crestColor, { roughness: 0.55, metalness: 0.05 });
+  const crest = new Group();
+  crest.position.set(0, 11.9, 3.1);
+  group.add(crest);
+  const crestMain = new Mesh(trackDisposable(tracked, new ConeGeometry(1.4, 3.4, 4)), crestMaterial);
+  crestMain.rotation.x = Math.PI;
+  crestMain.position.set(0, 1.3, 0);
+  crestMain.userData.tint = true;
+  crest.add(crestMain);
+  const crestFront = crestMain.clone();
+  crestFront.scale.set(0.8, 0.85, 0.8);
+  crestFront.position.set(0.85, 0.15, 0.2);
+  crestFront.rotation.z = -0.42;
+  crest.add(crestFront);
+  const crestRear = crestMain.clone();
+  crestRear.scale.set(0.78, 0.82, 0.8);
+  crestRear.position.set(-0.85, 0.15, 0.2);
+  crestRear.rotation.z = 0.42;
+  crest.add(crestRear);
+
+  const eyeWhiteMaterial = createMaterial(tracked, DEFAULT_EYE_WHITE, { roughness: 0.4, metalness: 0.02 });
+  const eyeGeometry = trackDisposable(tracked, new ConeGeometry(1.4, 1.8, 4));
+  const leftEye = new Mesh(eyeGeometry, eyeWhiteMaterial);
+  leftEye.rotation.set(Math.PI / 2, 0, Math.PI / 7);
+  leftEye.position.set(1.8, 9.3, 6.4);
   group.add(leftEye);
   const rightEye = leftEye.clone();
+  rightEye.position.x = -leftEye.position.x;
+  rightEye.rotation.z = -leftEye.rotation.z;
   group.add(rightEye);
+
+  const browMaterial = createMaterial(tracked, DEFAULT_EYE_ACCENT, { roughness: 0.6, metalness: 0.05 });
+  const browGeometry = trackDisposable(tracked, new BoxGeometry(2.4, 0.5, 0.7));
+  const leftBrow = new Mesh(browGeometry, browMaterial);
+  leftBrow.position.set(1.7, 9.9, 6.1);
+  leftBrow.rotation.z = -0.55;
+  group.add(leftBrow);
+  const rightBrow = leftBrow.clone();
+  rightBrow.position.x = -leftBrow.position.x;
+  rightBrow.rotation.z = -leftBrow.rotation.z;
+  group.add(rightBrow);
+
+  const pupilMaterial = createMaterial(tracked, DEFAULT_PUPIL, { roughness: 0.45, metalness: 0.05 });
+  const pupilGeometry = trackDisposable(tracked, new ConeGeometry(0.55, 0.8, 4));
+  const leftPupil = new Mesh(pupilGeometry, pupilMaterial);
+  leftPupil.rotation.x = Math.PI / 2;
+  leftPupil.position.set(1.8, 8.9, 6.9);
+  group.add(leftPupil);
+  const rightPupil = leftPupil.clone();
+  rightPupil.position.x = -leftPupil.position.x;
+  group.add(rightPupil);
+
+  const legMaterial = createMaterial(tracked, DEFAULT_LEG, { roughness: 0.55, metalness: 0.05 });
+  const legGeometry = trackDisposable(tracked, new CylinderGeometry(0.55, 0.9, 4.2, 4));
+  const leftLeg = new Mesh(legGeometry, legMaterial);
+  leftLeg.position.set(2.1, 2.2, 2.6);
+  group.add(leftLeg);
+  const rightLeg = leftLeg.clone();
+  rightLeg.position.x = -leftLeg.position.x;
+  group.add(rightLeg);
+
+  const toeGeometry = trackDisposable(tracked, new ConeGeometry(1.6, 1.6, 3));
+  const leftToe = new Mesh(toeGeometry, legMaterial);
+  leftToe.rotation.x = Math.PI / 2.1;
+  leftToe.position.set(2.1, 0.6, 3.4);
+  group.add(leftToe);
+  const rightToe = leftToe.clone();
+  rightToe.position.x = -leftToe.position.x;
+  group.add(rightToe);
+
+  const gemMaterial = createMaterial(tracked, DEFAULT_GEM, {
+    roughness: 0.3,
+    metalness: 0.05,
+    emissive: 0x1fb7e5,
+    emissiveIntensity: 0.8
+  });
+  const gem = new Mesh(trackDisposable(tracked, new OctahedronGeometry(1.8)), gemMaterial);
+  gem.position.set(0, 13, 3.2);
+  group.add(gem);
+
+  const haloMaterial = trackDisposable(
+    tracked,
+    new MeshStandardMaterial({
+      color: DEFAULT_GEM,
+      emissive: new Color(0x24a9d8),
+      emissiveIntensity: 0.6,
+      transparent: true,
+      opacity: 0.35,
+      roughness: 0.4,
+      metalness: 0.02,
+      flatShading: true,
+      depthWrite: false
+    })
+  );
+  const halo = new Mesh(new TorusGeometry(2.6, 0.22, 12, 36), haloMaterial);
+  halo.rotation.x = Math.PI / 2;
+  halo.position.set(0, 11.7, 3.2);
+  group.add(halo);
 
   const rig: ChickenRig = {
     leftWing,
@@ -152,7 +289,9 @@ export function buildBaseChickenRig(options: ChickenRigOptions = {}): ChickenRig
       leftWingZ: leftWing.rotation.z,
       rightWingZ: rightWing.rotation.z,
       headX: head.rotation.x,
-      tailX: tail.rotation.x
+      tailX: tail.rotation.x,
+      tailY: tail.rotation.y,
+      tailZ: tail.rotation.z
     }
   };
 
