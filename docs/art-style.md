@@ -1,4 +1,4 @@
-# Farsight Art Style Guide
+# Starbuds Art Style Guide
 
 This project blends crisp pixel-inspired textures with readable low-poly silhouettes. Use these notes when creating new assets so the world stays cohesive and lightweight enough for the browser.
 

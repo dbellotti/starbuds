@@ -1,4 +1,4 @@
-**Farsight Dev Log**
+**Starbuds Dev Log**
 
 **Project Snapshot**
 - Top-down multiplayer action roguelite; Three.js client + Node.js `ws` server; procedural levels, Helldivers-inspired pacing.
@@ -27,10 +27,10 @@
 - Tooling: Added `.env.example` defaults and `npm run dev:all` runner for synchronized dev servers; network layer now exposes live latency metrics.
 
 **Run / Verify**
-- `npm run dev --workspace=@farsight/server`
-- `npm run dev --workspace=@farsight/client`
+- `npm run dev --workspace=@starbuds/server`
+- `npm run dev --workspace=@starbuds/client`
 - `npm run dev:all` (combined watcher for client + server)
-- Optional: `LEVEL_SEED=<int> npm run dev --workspace=@farsight/server`
+- Optional: `LEVEL_SEED=<int> npm run dev --workspace=@starbuds/server`
 - Sanity: `npm run typecheck --workspaces` (clean)
 - Analysis: `npm run replay:snapshots -- logs/snapshots.json`
 - Smoke: `npm run smoke` spins up the server and verifies a headless bot handshake.

@@ -1,7 +1,7 @@
 #!/usr/bin/env tsx
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-import type { WorldSnapshot } from '@farsight/shared';
+import type { WorldSnapshot } from '@starbuds/shared';
 
 function usage(): void {
   console.log('Usage: tsx scripts/replay-snapshots.ts <snapshots.json>');

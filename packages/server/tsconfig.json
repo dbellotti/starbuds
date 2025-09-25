@@ -12,10 +12,10 @@
     "moduleResolution": "Node",
     "baseUrl": ".",
     "paths": {
-      "@farsight/shared": [
+      "@starbuds/shared": [
         "../shared/src/index"
       ],
-      "@farsight/shared/*": [
+      "@starbuds/shared/*": [
         "../shared/src/*"
       ]
     }

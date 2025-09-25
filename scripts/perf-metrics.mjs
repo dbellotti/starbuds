@@ -9,7 +9,7 @@ const rootDir = path.resolve(fileURLToPath(new URL('..', import.meta.url)));
 const viteBin = path.join(rootDir, 'node_modules', '.bin', process.platform === 'win32' ? 'vite.cmd' : 'vite');
 
 async function runBuild(serverPort) {
-  const build = spawn('npm', ['run', 'build', '--workspace=@farsight/client'], {
+  const build = spawn('npm', ['run', 'build', '--workspace=@starbuds/client'], {
     cwd: rootDir,
     stdio: 'inherit',
     env: {

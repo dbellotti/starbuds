@@ -4,8 +4,8 @@ const { readFileSync } = require('node:fs');
 const { resolve } = require('node:path');
 
 const tasks = [
-  { name: 'server', command: ['npm', 'run', 'dev', '--workspace=@farsight/server'] },
-  { name: 'client', command: ['npm', 'run', 'dev', '--workspace=@farsight/client'] }
+  { name: 'server', command: ['npm', 'run', 'dev', '--workspace=@starbuds/server'] },
+  { name: 'client', command: ['npm', 'run', 'dev', '--workspace=@starbuds/client'] }
 ];
 
 const children = new Map();

@@ -5,7 +5,7 @@ import {
   NETWORK_PROTOCOL_VERSION,
   type ServerMessage,
   type WelcomeMessage
-} from '@farsight/shared';
+} from '@starbuds/shared';
 
 interface HarnessOptions {
   url: string;

@@ -14,7 +14,7 @@ import {
   WebGLRenderer
 } from 'three';
 
-import type { EnemyKind } from '@farsight/shared';
+import type { EnemyKind } from '@starbuds/shared';
 
 import { applyChickenTint, buildBaseChickenRig, createCosmeticAttachment, type ChickenRig } from '../game/armoryAssets';
 import { ArmoryEffects } from '../game/armoryEffects';

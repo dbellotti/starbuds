@@ -3,7 +3,7 @@ date: 2025-09-23T04:42:08Z
 researcher: Codex
 git_commit: 2cea9071fddfc16455ac274893af9a4e87bea5f9
 branch: main
-repository: farsight
+repository: starbuds
 topic: "Step 1 – Armory preview and asset style lock"
 tags: [research, codebase, vfx, audio, armory]
 status: complete
@@ -17,7 +17,7 @@ last_updated_by: Codex
 **Researcher**: Codex
 **Git Commit**: 2cea9071fddfc16455ac274893af9a4e87bea5f9
 **Branch**: main
-**Repository**: farsight
+**Repository**: starbuds
 
 ## Research Question
 How do we deliver the first audio/visual upgrade step so players immediately see improved low-poly presentation in the armory hub, aligned with the provided concept art and `docs/styleguide.md` guidance?

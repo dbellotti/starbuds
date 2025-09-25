@@ -4,7 +4,7 @@ date: 2025-09-23T04:42:08Z
 researcher: Codex
 git_commit: 2cea9071fddfc16455ac274893af9a4e87bea5f9
 branch: main
-repository: farsight
+repository: starbuds
 topic: "Step 3 – Biome lighting and post-processing pass"
 tags: [research, codebase, lighting, vfx]
 status: complete
@@ -18,7 +18,7 @@ last_updated_by: Codex
 **Researcher**: Codex
 **Git Commit**: 2cea9071fddfc16455ac274893af9a4e87bea5f9
 **Branch**: main
-**Repository**: farsight
+**Repository**: starbuds
 
 ## Research Question
 How should we stage the third audio/visual step so that lighting and post-processing upgrades deliver a noticeable improvement in both armory previews and live gameplay?

@@ -13,7 +13,7 @@ const outputDir = path.join(clientDir, 'tests', '__snapshots__');
 const outputPath = path.join(outputDir, 'armory-preview.png');
 
 async function runClientBuild(serverPort) {
-  const build = spawn('npm', ['run', 'build', '--workspace=@farsight/client'], {
+  const build = spawn('npm', ['run', 'build', '--workspace=@starbuds/client'], {
     cwd: rootDir,
     stdio: 'inherit',
     env: {
@@ -84,7 +84,7 @@ async function captureArmoryScreenshot({ serverPort, previewPort, screenshotPath
 
       await page.setViewport({ width: 1280, height: 720, deviceScaleFactor: 2 });
       await page.evaluateOnNewDocument((flags) => {
-        window.localStorage.setItem('farsight/tutorials/v1', JSON.stringify(flags));
+        window.localStorage.setItem('starbuds/tutorials/v1', JSON.stringify(flags));
       }, {
         armoryIntro: true,
         readyHint: true,

@@ -1,4 +1,4 @@
-import type { EnemyKind } from '@farsight/shared';
+import type { EnemyKind } from '@starbuds/shared';
 
 import './styleguide.css';
 

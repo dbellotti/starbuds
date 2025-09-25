@@ -49,9 +49,9 @@ import type {
   QuickPingKind,
   GamePhase,
   Vector2D
-} from '@farsight/shared';
-import { createInitialInputState } from '@farsight/shared';
-import { ARTIFACT_TTL, PLAYER_HURT_FLASH_TIME, PROJECTILE_LIFETIME, TILE_SIZE, TICK_RATE } from '@farsight/shared';
+} from '@starbuds/shared';
+import { createInitialInputState } from '@starbuds/shared';
+import { ARTIFACT_TTL, PLAYER_HURT_FLASH_TIME, PROJECTILE_LIFETIME, TILE_SIZE, TICK_RATE } from '@starbuds/shared';
 
 import { applyChickenTint, createChickenModel } from './armoryAssets';
 import type { ChickenRig } from './armoryAssets';

@@ -3,10 +3,10 @@
   "compilerOptions": {
     "baseUrl": ".",
     "paths": {
-      "@farsight/shared/*": [
+      "@starbuds/shared/*": [
         "../shared/src/*"
       ],
-      "@farsight/shared": [
+      "@starbuds/shared": [
         "../shared/src/index"
       ]
     },

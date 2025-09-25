@@ -1,4 +1,4 @@
-import { NETWORK_PROTOCOL_VERSION } from '@farsight/shared';
+import { NETWORK_PROTOCOL_VERSION } from '@starbuds/shared';
 import type {
   ArmoryItem,
   ArmoryState,
@@ -27,7 +27,7 @@ import type {
   Vector2D,
   WorldSnapshot,
   WorldSnapshotDelta
-} from '@farsight/shared';
+} from '@starbuds/shared';
 
 export type SnapshotListener = (snapshot: WorldSnapshot) => void;
 export type DisconnectListener = (event: CloseEvent | Event) => void;

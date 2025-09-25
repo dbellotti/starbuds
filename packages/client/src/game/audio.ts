@@ -1,4 +1,4 @@
-import type { GamePhase } from '@farsight/shared';
+import type { GamePhase } from '@starbuds/shared';
 
 export interface AudioController {
   prime(): void;

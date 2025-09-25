@@ -4,7 +4,7 @@ date: 2025-09-23T04:42:08Z
 researcher: Codex
 git_commit: 2cea9071fddfc16455ac274893af9a4e87bea5f9
 branch: main
-repository: farsight
+repository: starbuds
 topic: "Step 6 – Performance baseline and telemetry capture"
 tags: [research, codebase, performance, tooling]
 status: complete
@@ -18,7 +18,7 @@ last_updated_by: Codex
 **Researcher**: Codex
 **Git Commit**: 2cea9071fddfc16455ac274893af9a4e87bea5f9
 **Branch**: main
-**Repository**: farsight
+**Repository**: starbuds
 
 ## Research Question
 What should the first step of the performance plan deliver so every subsequent optimization has measurable impact and players immediately see smoother telemetry during playtests?

@@ -61,7 +61,7 @@ export default tseslint.config(
           groups: [['builtin', 'external'], ['internal'], ['parent', 'sibling', 'index']],
           pathGroups: [
             {
-              pattern: '@farsight/**',
+              pattern: '@starbuds/**',
               group: 'internal',
               position: 'before'
             }

@@ -10,7 +10,7 @@
     "init_hook": [
       "if [ -f package.json ]; then echo '[devbox] Installing npm deps\u2026'; npm install; fi",
       "if [ -f package.json ]; then echo '[devbox] Installing Playwright browsers\u2026'; npx --yes playwright install --with-deps || true; fi",
-      "if [ -f package.json ] && ! npm ls ws --workspace=@farsight/server >/dev/null 2>&1; then echo '[devbox] Ensuring ws dependency\u2026'; npm install ws --workspace=@farsight/server; fi"
+      "if [ -f package.json ] && ! npm ls ws --workspace=@starbuds/server >/dev/null 2>&1; then echo '[devbox] Ensuring ws dependency\u2026'; npm install ws --workspace=@starbuds/server; fi"
     ],
     "scripts": {
       "dev": "npm run dev",

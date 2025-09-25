@@ -13,8 +13,8 @@
 - Armory HUD logic lives in `packages/client/src/game/hud.ts` with styling in `packages/client/src/style.css`; the milestone 5 pass centers the overlay, adds preview stages via hover/focus events, and is documented in `docs/milestone-5-ux-audit.md`.
 
 ## Build, Test, and Development Commands
-- `npm run dev --workspace=@farsight/server`: starts the tick loop and websocket server (respects `LEVEL_SEED`).
-- `npm run dev --workspace=@farsight/client`: launches the browser client with hot reload.
+- `npm run dev --workspace=@starbuds/server`: starts the tick loop and websocket server (respects `LEVEL_SEED`).
+- `npm run dev --workspace=@starbuds/client`: launches the browser client with hot reload.
 - `npm run dev:all`: spawns both client and server watchers (uses `scripts/dev-all.js`). Ctrl+C stops both processes.
 - `npm run typecheck --workspaces`: runs TypeScript in no-emit mode across all packages; use before commits.
 - `npm run replay:snapshots -- <file.json>`: summarises recorded `WorldSnapshot` logs to inspect tick cadence, counts, and boss waves.

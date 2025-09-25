@@ -5,7 +5,7 @@ import {
   NETWORK_PROTOCOL_VERSION,
   type PlayerInputState,
   type ServerMessage
-} from '@farsight/shared';
+} from '@starbuds/shared';
 
 interface RecordedInput {
   delay: number;

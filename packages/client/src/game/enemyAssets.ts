@@ -8,7 +8,7 @@ import {
   Vector3
 } from 'three';
 
-import type { EnemyKind } from '@farsight/shared';
+import type { EnemyKind } from '@starbuds/shared';
 
 export type EnemyRig = {
   leftWing?: Mesh;

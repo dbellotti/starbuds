@@ -30,7 +30,7 @@ import {
   createInitialInputState,
   generateLevel,
   getAugmentOption
-} from '@farsight/shared';
+} from '@starbuds/shared';
 import type {
   ActiveMutators,
   ArmoryItem,
@@ -61,7 +61,7 @@ import type {
   WorldSnapshot,
   WorldSnapshotDelta,
   XpDropState
-} from '@farsight/shared';
+} from '@starbuds/shared';
 
 const TICK_INTERVAL_MS = 1000 / TICK_RATE;
 const PORT = Number(process.env.PORT ?? 7777);
@@ -2059,7 +2059,7 @@ enterArmoryStage();
 
 const httpServer = createServer((_, res) => {
   res.writeHead(200, { 'Content-Type': 'text/plain' });
-  res.end('Farsight game server running');
+  res.end('Starbuds game server running');
 });
 
 const wss = new WebSocketServer({ server: httpServer });
@@ -2077,7 +2077,7 @@ wss.on('connection', (socket) => {
 });
 
 httpServer.listen(PORT, HOST, () => {
-  console.log(`Farsight server listening on ${HOST}:${PORT}`);
+  console.log(`Starbuds server listening on ${HOST}:${PORT}`);
 });
 
 setInterval(() => {

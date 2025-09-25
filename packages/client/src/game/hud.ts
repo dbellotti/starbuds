@@ -15,7 +15,7 @@ import type {
   RunSummary,
   WorldSnapshot,
   PlayerArmoryState
-} from '@farsight/shared';
+} from '@starbuds/shared';
 import {
   ARTIFACT_DEFINITIONS,
   LOOT_MAGNET_BASE_RADIUS,
@@ -24,7 +24,7 @@ import {
   PLAYER_HURT_FLASH_TIME,
   TICK_RATE,
   getAugmentOption
-} from '@farsight/shared';
+} from '@starbuds/shared';
 
 import { ArmoryPreviewRenderer } from './armoryPreviewRenderer';
 import type { AudioController } from './audio';
@@ -40,7 +40,7 @@ type TutorialFlag =
 
 type TutorialProgress = Record<TutorialFlag, boolean>;
 
-const TUTORIAL_STORAGE_KEY = 'farsight/tutorials/v1';
+const TUTORIAL_STORAGE_KEY = 'starbuds/tutorials/v1';
 
 function loadTutorialProgress(): TutorialProgress {
   try {

@@ -26,7 +26,7 @@ export default defineConfig({
   plugins: [bundleBudgetPlugin({ entryLimit: 950 * 1024, chunkLimit: 600 * 1024 })],
   resolve: {
     alias: {
-      '@farsight/shared': fileURLToPath(new URL('../shared/src', import.meta.url))
+      '@starbuds/shared': fileURLToPath(new URL('../shared/src', import.meta.url))
     }
   },
   server: {
