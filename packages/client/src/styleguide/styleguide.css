@@ -1,0 +1,105 @@
+:root {
+  color-scheme: dark;
+  font-family: 'Inter', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: #0b1220;
+  color: #e2e8f0;
+}
+
+#styleguide-root {
+  display: flex;
+  flex-direction: row;
+  min-height: 100vh;
+}
+
+.styleguide-controls {
+  width: 320px;
+  padding: 24px;
+  background: rgba(17, 24, 39, 0.92);
+  border-right: 1px solid rgba(59, 130, 246, 0.2);
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+
+.styleguide-controls h1 {
+  font-size: 20px;
+  margin: 0 0 12px;
+  color: #f8fafc;
+}
+
+.styleguide-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.styleguide-section h2 {
+  font-size: 14px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: #93c5fd;
+  margin: 0;
+}
+
+.styleguide-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.styleguide-field label {
+  font-size: 13px;
+  color: #cbd5f5;
+}
+
+.styleguide-field select,
+.styleguide-field input,
+.styleguide-field button {
+  font-size: 14px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  border: 1px solid rgba(59, 130, 246, 0.35);
+  background: rgba(30, 41, 59, 0.9);
+  color: #f8fafc;
+}
+
+.styleguide-field select:focus,
+.styleguide-field input:focus,
+.styleguide-field button:focus {
+  outline: 2px solid rgba(96, 165, 250, 0.6);
+  outline-offset: 2px;
+}
+
+.styleguide-preview {
+  flex: 1;
+  position: relative;
+  background: radial-gradient(circle at 50% 30%, rgba(59, 130, 246, 0.12), rgba(15, 23, 42, 0.85));
+  overflow: hidden;
+  touch-action: none;
+}
+
+.styleguide-preview canvas {
+  width: 100%;
+  height: 100%;
+  display: block;
+  cursor: grab;
+}
+
+.styleguide-preview canvas.is-dragging {
+  cursor: grabbing;
+}
+
+.styleguide-note {
+  font-size: 12px;
+  line-height: 1.4;
+  color: #94a3b8;
+}

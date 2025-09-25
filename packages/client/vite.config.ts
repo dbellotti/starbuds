@@ -34,6 +34,12 @@ export default defineConfig({
     port: 5173
   },
   build: {
-    target: 'esnext'
+    target: 'esnext',
+    rollupOptions: {
+      input: {
+        main: fileURLToPath(new URL('./index.html', import.meta.url)),
+        styleguide: fileURLToPath(new URL('./styleguide.html', import.meta.url))
+      }
+    }
   }
 });
