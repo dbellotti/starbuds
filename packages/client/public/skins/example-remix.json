@@ -1,0 +1,32 @@
+{
+  "name": "example-remix",
+  "frames": {},
+  "entities": {
+    "player": {
+      "animations": {
+        "idle": { "frames": ["player_idle_0", "player_idle_1"], "fps": 8 },
+        "move": { "frames": ["player_move_0", "player_move_1", "player_move_2", "player_move_3"], "fps": 14 },
+        "attack": { "frames": ["player_attack_0", "player_attack_1"], "fps": 16 }
+      },
+      "worldSize": { "width": 22, "height": 29 },
+      "tintable": true
+    },
+    "enemy:coyote": {
+      "animations": {
+        "idle": { "frames": ["enemy_coyote_idle_0", "enemy_coyote_idle_1"], "fps": 4 },
+        "move": { "frames": ["enemy_coyote_move_0", "enemy_coyote_move_1"], "fps": 10 },
+        "windup": { "frames": ["enemy_coyote_windup_0", "enemy_coyote_windup_1"], "fps": 14 }
+      },
+      "worldSize": { "width": 34, "height": 34 },
+      "tintable": false
+    },
+    "projectile:player": {
+      "animations": {
+        "idle": { "frames": ["proj_player_idle_0", "proj_player_idle_1"], "fps": 12 }
+      },
+      "worldSize": { "width": 14, "height": 14 },
+      "tintable": true,
+      "tint": "#34d399"
+    }
+  }
+}

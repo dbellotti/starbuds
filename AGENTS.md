@@ -33,6 +33,7 @@
 - Name files and symbols descriptively: `camelCase` for functions/vars, `PascalCase` for types/classes, `kebab-case` for files.
 - Three.js materials and simulation constants live in `shared`; avoid duplicating magic numbers on client/server.
 - Procedural textures are authored in code; cache reusable `CanvasTexture` instances rather than re-creating per frame. Biome tiles pack into a runtime atlas via `createBiomeMaterials`; reuse the helper when adding new atlas tiles.
+- Characters/enemies/attacks/FX render through the sprite skin pipeline (`packages/client/src/game/sprites/`, documented in `docs/skinning.md`). Add or reskin content by editing the skin manifest (or `defaultSkin.ts` painters) — do not add per-entity meshes/materials to the render loop; submit to the shared `SpriteBatch` layers instead.
 - Audio must be gated behind a user gesture (see `createAudioController`) to satisfy browser autoplay policies. Combat intensity now ramps through `audio.setIntensity`, and phase changes call `audio.setPhase`.
 - ESLint (`.eslintrc.cjs`) + Prettier (`.prettierrc.json`) guard formatting. Run `npm run lint:fix` before long diff reviews.
 

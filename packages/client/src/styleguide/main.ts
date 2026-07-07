@@ -3,7 +3,7 @@ import type { EnemyKind } from '@starbuds/shared';
 import './styleguide.css';
 
 import { StyleguidePreview, type HeroPose } from './previewScene';
-import { ENEMY_COLORS } from '../game/enemyAssets';
+import { ENEMY_BASE_COLORS } from '../game/sprites';
 
 const HERO_DEFAULT_COLOR = '#facc15';
 
@@ -196,7 +196,7 @@ document.addEventListener('DOMContentLoaded', () => {
   };
 
   const updateEnemyInfo = (kind: EnemyKind): void => {
-    const color = toHexString(ENEMY_COLORS[kind]);
+    const color = toHexString(ENEMY_BASE_COLORS[kind]);
     enemyInfo.textContent = `${kind.toUpperCase()} • Base tint ${color}`;
     enemyInfo.style.color = color;
   };
