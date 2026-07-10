@@ -1,21 +1,5 @@
-import {
-  AmbientLight,
-  Box3,
-  Color,
-  DirectionalLight,
-  Group,
-  Mesh,
-  PerspectiveCamera,
-  Scene,
-  Vector3,
-  WebGLRenderer,
-  type Material
-} from 'three';
-
-import { applyChickenTint, buildBaseChickenRig, createCosmeticAttachment } from './armoryAssets';
-import type { ChickenRig } from './armoryAssets';
-import { ArmoryEffects } from './armoryEffects';
 import type { AudioController } from './audio';
+import { SpriteAnimator, loadSkin, type ResolvedVisual, type SpriteAtlas } from './sprites';
 
 type PreviewState = {
   cosmeticId?: string | null;
@@ -28,71 +12,70 @@ interface ArmoryPreviewOptions {
 }
 
 const DEFAULT_TINT = 0xfacc15;
+const FRAME_INTERVAL_MS = 1000 / 30;
 
+/** Accent colors for upgrade preview pulses, keyed by armory item id. */
+const UPGRADE_COLORS: Record<string, string> = {
+  'focus-matrix': '#38bdf8',
+  'celerity-core': '#22d3ee',
+  'bulwark-weave': '#34d399',
+  'rift-channeler': '#818cf8',
+  'magnet-surge': '#facc15'
+};
+
+/**
+ * Armory hero preview. Draws the player's sprite (plus cosmetic overlays and
+ * upgrade pulses) from the shared skin atlas onto a plain 2D canvas — no
+ * second WebGL context, capped at 30 fps, paused while hidden.
+ */
 export class ArmoryPreviewRenderer {
   readonly canvas: HTMLCanvasElement;
 
   private readonly stage: HTMLElement;
-  private readonly renderer: WebGLRenderer;
-  private readonly camera: PerspectiveCamera;
-  private readonly scene: Scene;
-  private readonly root: Group;
-  private readonly rigInstance: { group: Group; rig: ChickenRig; dispose: () => void };
-  private readonly effects: ArmoryEffects;
+  private readonly ctx: CanvasRenderingContext2D;
   private readonly maxDpr: number;
   private readonly resizeObserver: ResizeObserver;
   private readonly handleVisibilityChange: () => void;
   private readonly audio: AudioController | undefined;
-  private readonly rigBounds = new Box3();
-  private readonly boundCenter = new Vector3();
-  private readonly boundSize = new Vector3();
-  private readonly lookTarget = new Vector3();
-  private readonly tempRootPosition = new Vector3();
-  private readonly targetCenterY = 4.5;
+  private readonly animator = new SpriteAnimator();
+  private readonly cosmeticAnimator = new SpriteAnimator();
+  private readonly tintCanvas = document.createElement('canvas');
 
+  private atlas: SpriteAtlas | null = null;
+  private heroVisual: ResolvedVisual | null = null;
+  private cosmeticVisual: ResolvedVisual | null = null;
   private running = false;
   private visible = true;
+  private disposed = false;
   private requestId: number | null = null;
   private lastFrame = 0;
+  private time = 0;
   private effectTimeout = 0;
-  private currentCosmetic: { id: string; group: Group } | null = null;
+  private activeUpgradeColor = '#38bdf8';
+  private currentCosmeticId: string | null = null;
   private currentTint = DEFAULT_TINT;
-  private orbitTime = 0;
 
   constructor(stage: HTMLElement, options: ArmoryPreviewOptions = {}) {
     this.stage = stage;
     this.maxDpr = options.maxDpr ?? 1.5;
     this.audio = options.audio;
-    this.renderer = new WebGLRenderer({ antialias: true, alpha: true });
-    this.renderer.autoClear = true;
-    this.renderer.setClearColor(new Color(0x000000), 0);
-    this.canvas = this.renderer.domElement;
+    this.canvas = document.createElement('canvas');
     this.canvas.classList.add('hud-armory-preview-canvas');
+    const ctx = this.canvas.getContext('2d');
+    if (!ctx) {
+      throw new Error('Failed to create armory preview context');
+    }
+    this.ctx = ctx;
 
-    this.camera = new PerspectiveCamera(30, 1, 0.1, 100);
-
-    this.scene = new Scene();
-    const ambient = new AmbientLight(0xffffff, 0.78);
-    this.scene.add(ambient);
-    const keyLight = new DirectionalLight(0xffffff, 0.9);
-    keyLight.position.set(16, 24, 14);
-    this.scene.add(keyLight);
-    const rimLight = new DirectionalLight(0xbde0fe, 0.4);
-    rimLight.position.set(-12, 18, -12);
-    this.scene.add(rimLight);
-
-    this.root = new Group();
-    this.scene.add(this.root);
-
-    this.rigInstance = buildBaseChickenRig({ primaryColor: DEFAULT_TINT, scale: 0.66 });
-    this.rigInstance.group.rotation.y = Math.PI / 6;
-    this.root.add(this.rigInstance.group);
-
-    this.effects = new ArmoryEffects();
-    this.effects.group.position.set(0, 0, 0);
-    this.root.add(this.effects.group);
-
-    this.calibrateView();
+    void loadSkin().then((atlas) => {
+      if (this.disposed) {
+        return;
+      }
+      this.atlas = atlas;
+      this.heroVisual = atlas.getVisual('player');
+      this.animator.setVisual(this.heroVisual);
+      this.applyCosmetic(this.currentCosmeticId);
+    });
 
     this.resizeObserver = new ResizeObserver(() => {
       this.resize();
@@ -124,7 +107,7 @@ export class ArmoryPreviewRenderer {
       if (!this.running) {
         this.running = true;
         this.lastFrame = 0;
-        this.requestId = window.requestAnimationFrame((time) => this.tick(time));
+        this.requestId = window.requestAnimationFrame((timestamp) => this.tick(timestamp));
       }
     } else {
       if (this.running) {
@@ -141,7 +124,6 @@ export class ArmoryPreviewRenderer {
   setState(state: PreviewState): void {
     if (typeof state.tint === 'number') {
       this.currentTint = state.tint;
-      applyChickenTint(this.rigInstance.group, state.tint);
     }
     if ('cosmeticId' in state) {
       this.applyCosmetic(state.cosmeticId ?? null);
@@ -152,13 +134,12 @@ export class ArmoryPreviewRenderer {
     if (!this.visible) {
       return;
     }
-    this.effects.playLoop(upgradeId, this.rigInstance.rig);
+    this.activeUpgradeColor = UPGRADE_COLORS[upgradeId] ?? '#38bdf8';
     this.effectTimeout = 1.4;
     this.audio?.playArmoryHover();
   }
 
   clearUpgrade(): void {
-    this.effects.stopLoop();
     this.effectTimeout = 0;
   }
 
@@ -168,25 +149,19 @@ export class ArmoryPreviewRenderer {
       return;
     }
     const dpr = Math.min(window.devicePixelRatio ?? 1, this.maxDpr);
-    this.renderer.setPixelRatio(dpr);
-    this.renderer.setSize(clientWidth, clientHeight, false);
-    this.camera.aspect = clientWidth / clientHeight;
-    this.camera.updateProjectionMatrix();
+    this.canvas.width = Math.round(clientWidth * dpr);
+    this.canvas.height = Math.round(clientHeight * dpr);
+    this.canvas.style.width = `${clientWidth}px`;
+    this.canvas.style.height = `${clientHeight}px`;
   }
 
   dispose(): void {
+    this.disposed = true;
     this.setActive(false);
     this.resizeObserver.disconnect();
     document.removeEventListener('visibilitychange', this.handleVisibilityChange);
     if (this.canvas.isConnected) {
       this.canvas.remove();
-    }
-    this.effects.dispose();
-    this.rigInstance.dispose();
-    this.renderer.dispose();
-    if (this.currentCosmetic) {
-      this.disposeCosmetic(this.currentCosmetic.group);
-      this.currentCosmetic = null;
     }
   }
 
@@ -197,110 +172,128 @@ export class ArmoryPreviewRenderer {
     if (this.lastFrame === 0) {
       this.lastFrame = timestamp;
     }
-    const frameInterval = 1000 / 30;
     const elapsed = timestamp - this.lastFrame;
-    if (elapsed >= frameInterval) {
+    if (elapsed >= FRAME_INTERVAL_MS) {
       const deltaSeconds = Math.min(0.1, elapsed / 1000);
       this.lastFrame = timestamp;
       this.update(deltaSeconds);
-      this.renderer.render(this.scene, this.camera);
+      this.draw();
     }
     this.requestId = window.requestAnimationFrame((time) => this.tick(time));
   }
 
   private update(deltaSeconds: number): void {
-    this.effects.update(deltaSeconds);
-    this.orbitTime += deltaSeconds;
-    this.rigInstance.group.rotation.y = Math.PI / 6 + Math.sin(this.orbitTime * 0.3) * 0.08;
+    this.time += deltaSeconds;
+    this.animator.update(deltaSeconds);
+    this.cosmeticAnimator.update(deltaSeconds);
     if (this.effectTimeout > 0) {
-      this.effectTimeout -= deltaSeconds;
-      if (this.effectTimeout <= 0) {
-        this.clearUpgrade();
+      this.effectTimeout = Math.max(0, this.effectTimeout - deltaSeconds);
+    }
+  }
+
+  private draw(): void {
+    const { width, height } = this.canvas;
+    const ctx = this.ctx;
+    ctx.clearRect(0, 0, width, height);
+    if (!this.atlas || !this.heroVisual) {
+      return;
+    }
+
+    const cx = width / 2;
+    const cy = height / 2;
+    const spriteSize = Math.min(width, height) * 0.72;
+    const sway = Math.sin(this.time * 0.6) * 0.1;
+
+    // Grounding glow under the hero.
+    const glow = ctx.createRadialGradient(cx, cy + spriteSize * 0.32, spriteSize * 0.05, cx, cy + spriteSize * 0.32, spriteSize * 0.42);
+    glow.addColorStop(0, 'rgba(96, 165, 250, 0.3)');
+    glow.addColorStop(1, 'rgba(96, 165, 250, 0)');
+    ctx.fillStyle = glow;
+    ctx.fillRect(0, 0, width, height);
+
+    // Upgrade pulse rings behind the hero.
+    if (this.effectTimeout > 0) {
+      const progress = 1 - this.effectTimeout / 1.4;
+      for (let i = 0; i < 2; i += 1) {
+        const ringProgress = (progress + i * 0.5) % 1;
+        ctx.strokeStyle = this.activeUpgradeColor;
+        ctx.globalAlpha = (1 - ringProgress) * 0.65;
+        ctx.lineWidth = Math.max(2, spriteSize * 0.02);
+        ctx.beginPath();
+        ctx.ellipse(cx, cy + spriteSize * 0.3, spriteSize * (0.16 + ringProgress * 0.34), spriteSize * (0.05 + ringProgress * 0.1), 0, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+      ctx.globalAlpha = 1;
+    }
+
+    const heroFrame = this.animator.getFrame();
+    if (heroFrame) {
+      this.drawFrame(heroFrame.rect, cx, cy, spriteSize, sway, this.heroVisual.tintable ? this.currentTint : null);
+    }
+
+    if (this.cosmeticVisual) {
+      const cosmeticFrame = this.cosmeticAnimator.getFrame();
+      if (cosmeticFrame) {
+        this.drawFrame(cosmeticFrame.rect, cx, cy, spriteSize, sway, null);
       }
     }
+  }
+
+  private drawFrame(
+    rect: { x: number; y: number; w: number; h: number },
+    cx: number,
+    cy: number,
+    size: number,
+    rotation: number,
+    tint: number | null
+  ): void {
+    if (!this.atlas) {
+      return;
+    }
+    const ctx = this.ctx;
+    let source: CanvasImageSource = this.atlas.source;
+    let sx = rect.x;
+    let sy = rect.y;
+    if (tint !== null) {
+      this.applyTint(rect, tint);
+      source = this.tintCanvas;
+      sx = 0;
+      sy = 0;
+    }
+    ctx.save();
+    ctx.imageSmoothingEnabled = false;
+    ctx.translate(cx, cy);
+    ctx.rotate(rotation);
+    ctx.drawImage(source, sx, sy, rect.w, rect.h, -size / 2, -size / 2, size, size);
+    ctx.restore();
+  }
+
+  private applyTint(rect: { x: number; y: number; w: number; h: number }, tint: number): void {
+    const tintCtx = this.tintCanvas.getContext('2d');
+    if (!tintCtx) {
+      return;
+    }
+    if (this.tintCanvas.width !== rect.w || this.tintCanvas.height !== rect.h) {
+      this.tintCanvas.width = rect.w;
+      this.tintCanvas.height = rect.h;
+    }
+    tintCtx.clearRect(0, 0, rect.w, rect.h);
+    tintCtx.imageSmoothingEnabled = false;
+    tintCtx.drawImage(this.atlas!.source, rect.x, rect.y, rect.w, rect.h, 0, 0, rect.w, rect.h);
+    tintCtx.globalCompositeOperation = 'multiply';
+    tintCtx.fillStyle = `#${tint.toString(16).padStart(6, '0')}`;
+    tintCtx.fillRect(0, 0, rect.w, rect.h);
+    tintCtx.globalCompositeOperation = 'destination-in';
+    tintCtx.drawImage(this.atlas!.source, rect.x, rect.y, rect.w, rect.h, 0, 0, rect.w, rect.h);
+    tintCtx.globalCompositeOperation = 'source-over';
   }
 
   private applyCosmetic(id: string | null): void {
-    if (this.currentCosmetic?.id === id) {
+    this.currentCosmeticId = id;
+    if (!this.atlas) {
       return;
     }
-    if (this.currentCosmetic) {
-      this.rigInstance.group.remove(this.currentCosmetic.group);
-      this.disposeCosmetic(this.currentCosmetic.group);
-      this.currentCosmetic = null;
-    }
-    if (!id) {
-      this.calibrateView();
-      return;
-    }
-    const attachment = createCosmeticAttachment(id, { tint: this.currentTint });
-    if (!attachment) {
-      this.calibrateView();
-      return;
-    }
-    this.positionAttachment(attachment);
-    this.rigInstance.group.add(attachment);
-    this.currentCosmetic = { id, group: attachment };
-    this.calibrateView();
+    this.cosmeticVisual = id ? this.atlas.getVisual(`cosmetic:${id}`) : null;
+    this.cosmeticAnimator.setVisual(this.cosmeticVisual);
   }
-
-  private calibrateView(): void {
-    this.tempRootPosition.copy(this.root.position);
-    this.root.position.set(0, 0, 0);
-    this.root.updateMatrixWorld(true);
-    this.rigInstance.group.updateWorldMatrix(true, true);
-    this.rigBounds.setFromObject(this.rigInstance.group);
-    if (!Number.isFinite(this.rigBounds.min.y) || !Number.isFinite(this.rigBounds.max.y)) {
-      this.root.position.copy(this.tempRootPosition);
-      this.root.updateMatrixWorld(true);
-      return;
-    }
-    this.rigBounds.getCenter(this.boundCenter);
-    this.rigBounds.getSize(this.boundSize);
-
-    this.root.position.set(-this.boundCenter.x, this.targetCenterY - this.boundCenter.y, -this.boundCenter.z);
-    this.root.updateMatrixWorld(true);
-
-    const paddedHeight = Math.max(this.boundSize.y, 6);
-    const distance = Math.max(26, paddedHeight * 3.1);
-    const cameraHeight = this.targetCenterY + paddedHeight * 0.62;
-
-    this.camera.position.set(0, cameraHeight, distance);
-    this.lookTarget.set(0, this.targetCenterY, 0);
-    this.camera.lookAt(this.lookTarget);
-    this.camera.updateProjectionMatrix();
-  }
-
-  private positionAttachment(group: Group): void {
-    const anchors = (group.userData as { anchors?: Record<string, Vector3> }).anchors ?? null;
-    group.position.set(0, 0, 0);
-    group.rotation.set(0, 0, 0);
-    if (!anchors) {
-      return;
-    }
-    if (anchors.crest) {
-      group.position.copy(anchors.crest);
-    } else if (anchors.tail) {
-      group.position.copy(anchors.tail);
-    } else if (anchors.back) {
-      group.position.copy(anchors.back);
-    }
-  }
-
-  /* eslint-disable @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access */
-  private disposeCosmetic(node: Group): void {
-    node.traverse((child) => {
-      if (!(child instanceof Mesh)) {
-        return;
-      }
-      const materials = Array.isArray(child.material) ? child.material : [child.material];
-      for (const material of materials) {
-        if (material && typeof material.dispose === 'function') {
-          (material as Material).dispose();
-        }
-      }
-      child.geometry.dispose();
-    });
-  }
-  /* eslint-enable @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access */
 }

@@ -53,22 +53,18 @@ import type {
 import { createInitialInputState } from '@starbuds/shared';
 import { ARTIFACT_TTL, PLAYER_HURT_FLASH_TIME, PROJECTILE_LIFETIME, TILE_SIZE, TICK_RATE } from '@starbuds/shared';
 
-import { applyChickenTint, createChickenModel } from './armoryAssets';
-import type { ChickenRig } from './armoryAssets';
 import { createAudioController } from './audio';
 import { createDebugOverlay } from './debugOverlay';
-import { ENEMY_COLORS, createEnemyModel, disposeEnemyModel, type EnemyRig } from './enemyAssets';
 import { createHud } from './hud';
 import { InputController } from './input';
 import { GameNetwork } from './network';
+import { SpriteAnimator, SpriteBatch, loadSkin, type ResolvedVisual, type SpriteAtlas } from './sprites';
 import { getServerUrl } from '../config';
 
 const DESIGN_WORLD_UNITS = 480;
 const PLAYER_HEIGHT = 2;
 const PLAYER_COLORS = [0xfef08a, 0x38bdf8, 0xf97316, 0xf9a8d4];
 const INPUT_RATE_MS = 50;
-const PLAYER_TEXTURE = createChickenTexture();
-const ENEMY_TEXTURES = createEnemyTextures();
 const PROJECTILE_TRAIL_LENGTH = 12;
 const PROJECTILE_STYLE: Record<ProjectileFaction, { body: number; trail: number; impact: number }> = {
   player: { body: 0x38bdf8, trail: 0x60a5fa, impact: 0x8ecaff },
@@ -98,7 +94,8 @@ export async function bootstrapGame(): Promise<void> {
 
   const scene = new Scene();
   const camera = createCamera(new Vector2(window.innerWidth, window.innerHeight));
-  const worldRenderer = new WorldRenderer(scene);
+  const atlas = await loadSkin();
+  const worldRenderer = new WorldRenderer(scene, atlas);
   const network = new GameNetwork();
   const audio = createAudioController();
   const hud = createHud(mountNode, {
@@ -732,6 +729,12 @@ class ExtractionBeacon {
   }
 }
 
+type SpriteBatchSet = {
+  ground: SpriteBatch;
+  actors: SpriteBatch;
+  fx: SpriteBatch;
+};
+
 class WorldRenderer {
   private readonly sceneGroup = new Group();
   private readonly players = new Map<string, PlayerAvatar>();
@@ -743,7 +746,9 @@ class WorldRenderer {
   private readonly projectileGroup = new Group();
   private readonly xpGroup = new Group();
   private readonly artifactGroup = new Group();
-  private readonly impactSystem = new ImpactSystem();
+  private readonly atlas: SpriteAtlas;
+  private readonly batches: SpriteBatchSet;
+  private readonly impactSystem: ImpactSystem;
   private readonly pulseSystem = new PsychicPulseSystem();
   private readonly decor = new DecorRenderer();
   private readonly enemyPool: EnemyAvatar[] = [];
@@ -751,14 +756,25 @@ class WorldRenderer {
   private localPlayerId: string | null = null;
   private readonly extractionBeacon = new ExtractionBeacon(this.sceneGroup);
 
-  constructor(scene: Scene) {
+  constructor(scene: Scene, atlas: SpriteAtlas) {
+    this.atlas = atlas;
+    // Three shared-atlas batches render every sprite in the world:
+    // ground FX under actors, actor bodies, then additive top FX.
+    this.batches = {
+      ground: new SpriteBatch(atlas.texture, { additive: true, renderOrder: 2 }),
+      actors: new SpriteBatch(atlas.texture, { renderOrder: 4 }),
+      fx: new SpriteBatch(atlas.texture, { additive: true, renderOrder: 5, capacity: 512 })
+    };
+    this.impactSystem = new ImpactSystem(atlas);
     scene.add(this.decor.group);
     scene.add(this.sceneGroup);
     this.sceneGroup.add(this.levelRenderer.group);
     this.sceneGroup.add(this.projectileGroup);
     this.sceneGroup.add(this.xpGroup);
     this.sceneGroup.add(this.artifactGroup);
-    this.sceneGroup.add(this.impactSystem.group);
+    this.sceneGroup.add(this.batches.ground.mesh);
+    this.sceneGroup.add(this.batches.actors.mesh);
+    this.sceneGroup.add(this.batches.fx.mesh);
     this.sceneGroup.add(this.pulseSystem.group);
   }
 
@@ -790,9 +806,8 @@ class WorldRenderer {
     for (const player of snapshot.players) {
       let avatar = this.players.get(player.id);
       if (!avatar) {
-        avatar = new PlayerAvatar(player.id, player.id === this.localPlayerId);
+        avatar = new PlayerAvatar(player.id, player.id === this.localPlayerId, this.atlas);
         this.players.set(player.id, avatar);
-        this.sceneGroup.add(avatar.mesh);
       }
       avatar.setState(player);
       seenPlayers.add(player.id);
@@ -801,7 +816,7 @@ class WorldRenderer {
     for (const enemy of snapshot.enemies) {
       let avatar = this.enemies.get(enemy.id);
       if (!avatar) {
-        avatar = this.enemyPool.pop() ?? new EnemyAvatar(this.sceneGroup);
+        avatar = this.enemyPool.pop() ?? new EnemyAvatar(this.atlas);
         avatar.reset(enemy.id, enemy.kind);
         this.enemies.set(enemy.id, avatar);
       } else if (avatar.getKind() !== enemy.kind) {
@@ -825,7 +840,7 @@ class WorldRenderer {
       let avatar = this.projectiles.get(projectile.id);
       const created = !avatar;
       if (!avatar) {
-        avatar = this.projectilePool.pop() ?? new ProjectileAvatar(this.projectileGroup);
+        avatar = this.projectilePool.pop() ?? new ProjectileAvatar(this.projectileGroup, this.atlas);
         avatar.reset(projectile.id, projectile.faction);
         this.projectiles.set(projectile.id, avatar);
       } else if (avatar.getFaction() !== projectile.faction) {
@@ -877,9 +892,8 @@ class WorldRenderer {
       avatar.setTargeted((targetedCounts.get(id) ?? 0) > 0);
     }
 
-    for (const [id, avatar] of this.players.entries()) {
+    for (const id of this.players.keys()) {
       if (!seenPlayers.has(id)) {
-        this.sceneGroup.remove(avatar.mesh);
         this.players.delete(id);
       }
     }
@@ -929,14 +943,17 @@ class WorldRenderer {
     XP_ORB_TIME.value = performance.now() * 0.001;
     const focus = this.getLocalPlayerPosition();
     this.decor.update(deltaSeconds, focus);
+    this.batches.ground.begin();
+    this.batches.actors.begin();
+    this.batches.fx.begin();
     for (const avatar of this.players.values()) {
-      avatar.update(deltaSeconds);
+      avatar.update(deltaSeconds, this.batches);
     }
     for (const avatar of this.enemies.values()) {
-      avatar.update(deltaSeconds);
+      avatar.update(deltaSeconds, this.batches);
     }
     for (const avatar of this.projectiles.values()) {
-      avatar.update(deltaSeconds);
+      avatar.update(deltaSeconds, this.batches);
     }
     for (const orb of this.xpDrops.values()) {
       orb.update(deltaSeconds);
@@ -944,9 +961,12 @@ class WorldRenderer {
     for (const shard of this.artifacts.values()) {
       shard.update(deltaSeconds);
     }
-    this.impactSystem.update(deltaSeconds);
+    this.impactSystem.update(deltaSeconds, this.batches.fx);
     this.pulseSystem.update(deltaSeconds);
     this.extractionBeacon.update(deltaSeconds);
+    this.batches.ground.end();
+    this.batches.actors.end();
+    this.batches.fx.end();
   }
 
   spawnPing(x: number, y: number, kind: QuickPingKind, isLocal: boolean): void {
@@ -1489,19 +1509,17 @@ function disposeMaterial(material: { dispose: () => void; map?: { dispose: () =>
 }
 
 class PlayerAvatar {
-  readonly mesh: Group;
   readonly id: string;
-  private readonly body: Mesh;
-  private readonly material: MeshBasicMaterial;
-  private readonly lowPoly: Group;
+  private readonly visual: ResolvedVisual | null;
+  private readonly fxVisual: ResolvedVisual | null;
+  private readonly animator = new SpriteAnimator();
   private readonly currentPosition = new Vector2();
   private readonly targetPosition = new Vector2();
   private readonly baseColor = new Color();
   private readonly hurtColor = new Color(0xff4d6d);
   private readonly tempColor = new Color();
-  private readonly reticle: Mesh;
-  private readonly reticleMaterial: MeshBasicMaterial;
-  private readonly reticleBaseScale: number;
+  private readonly reticleBaseScale = TILE_SIZE * 0.85;
+  private reticleOpacity = 0;
   private currentFacing = 0;
   private targetFacing = 0;
   private hurtTimer = 0;
@@ -1513,52 +1531,14 @@ class PlayerAvatar {
   private initialized = false;
   private attackTimer = 0;
   private movementSpeed = 0;
-  private readonly animationPhase = Math.random() * Math.PI * 2;
-  private readonly rig: ChickenRig | null;
 
-  constructor(id: string, isLocal: boolean) {
+  constructor(id: string, isLocal: boolean, atlas: SpriteAtlas) {
     this.id = id;
-    this.mesh = new Group();
-    this.mesh.renderOrder = 4;
-
-    const geometry = new PlaneGeometry(18, 24);
-    geometry.rotateX(-Math.PI / 2);
-    this.material = new MeshBasicMaterial({
-      color: pickColor(id, isLocal),
-      map: PLAYER_TEXTURE,
-      transparent: true,
-      toneMapped: false
-    });
-    this.material.depthWrite = false;
-
-    this.body = new Mesh(geometry, this.material);
-    this.body.position.y = PLAYER_HEIGHT;
-    this.body.renderOrder = 4;
-    this.mesh.add(this.body);
-
-    this.lowPoly = createChickenModel(pickColor(id, isLocal));
-    this.rig = (this.lowPoly.userData.rig as ChickenRig | undefined) ?? null;
-    this.lowPoly.position.y = PLAYER_HEIGHT * 0.6;
-    this.mesh.add(this.lowPoly);
-
-    const reticleGeometry = new PlaneGeometry(1, 1);
-    reticleGeometry.rotateX(-Math.PI / 2);
-    this.reticleMaterial = new MeshBasicMaterial({
-      color: 0xfacc15,
-      transparent: true,
-      opacity: 0,
-      blending: AdditiveBlending,
-      depthWrite: false
-    });
-    this.reticle = new Mesh(reticleGeometry, this.reticleMaterial);
-    this.reticle.position.y = 0.2;
-    this.reticle.visible = false;
-    this.reticleBaseScale = TILE_SIZE * 0.85;
-    this.reticle.scale.setScalar(this.reticleBaseScale);
-    this.mesh.add(this.reticle);
-
-    this.baseColor.setHex(pickColor(id, isLocal));
     this.isLocal = isLocal;
+    this.visual = atlas.getVisual('player');
+    this.fxVisual = atlas.getVisual('fx:reticle');
+    this.animator.setVisual(this.visual);
+    this.baseColor.setHex(pickColor(id, isLocal));
   }
 
   setState(state: PlayerState): void {
@@ -1571,8 +1551,6 @@ class PlayerAvatar {
     if (!this.initialized) {
       this.currentPosition.set(state.position.x, state.position.y);
       this.currentFacing = state.facing;
-      this.mesh.position.set(state.position.x, 0, state.position.y);
-      this.mesh.rotation.y = -this.currentFacing + Math.PI / 2;
       this.initialized = true;
     }
   }
@@ -1580,29 +1558,29 @@ class PlayerAvatar {
   setIsLocal(isLocal: boolean): void {
     this.isLocal = isLocal;
     this.baseColor.setHex(pickColor(this.id, isLocal));
-    this.material.color.copy(this.baseColor);
-    applyChickenTint(this.lowPoly, this.baseColor.getHex());
   }
 
   setTargeted(value: boolean): void {
     this.targeted = value;
-    if (value) {
-      this.reticle.visible = true;
-    }
   }
 
-  update(deltaSeconds: number): void {
+  update(deltaSeconds: number, batches: SpriteBatchSet): void {
     this.time += deltaSeconds;
     const lerpFactor = Math.min(1, deltaSeconds * 10);
     this.currentPosition.lerp(this.targetPosition, lerpFactor);
     this.currentFacing = MathUtils.lerp(this.currentFacing, this.targetFacing, lerpFactor);
     this.hurtTimer = Math.max(0, this.hurtTimer - deltaSeconds);
     this.invulnerableTimer = Math.max(0, this.invulnerableTimer - deltaSeconds);
-
-    this.mesh.position.set(this.currentPosition.x, 0, this.currentPosition.y);
-    this.mesh.rotation.y = -this.currentFacing + Math.PI / 2;
-
     this.attackTimer = Math.max(0, this.attackTimer - deltaSeconds);
+
+    if (this.attackTimer > 0) {
+      this.animator.play('attack');
+    } else if (this.movementSpeed > 12) {
+      this.animator.play('move');
+    } else {
+      this.animator.play('idle');
+    }
+    this.animator.update(deltaSeconds);
 
     const hurtRatio = PLAYER_HURT_FLASH_TIME > 0 ? Math.min(1, this.hurtTimer / PLAYER_HURT_FLASH_TIME) : 0;
     this.tempColor.copy(this.baseColor);
@@ -1610,43 +1588,49 @@ class PlayerAvatar {
       const intensity = 0.5 + 0.25 * Math.sin(this.time * 24);
       this.tempColor.lerp(this.hurtColor, Math.min(1, hurtRatio * intensity));
     }
-    this.material.color.copy(this.tempColor);
 
+    let opacity = 1;
     if (this.invulnerableTimer > 0) {
       const flicker = Math.floor(this.time * 16) % 2 === 0 ? 0.4 : -0.2;
-      this.material.opacity = Math.min(1, 0.75 + flicker * 0.5);
-    } else {
-      this.material.opacity = 1;
+      opacity = Math.min(1, 0.75 + flicker * 0.5);
+    }
+
+    const rotation = -this.currentFacing + Math.PI / 2;
+    const frame = this.animator.getFrame();
+    if (this.visual && frame) {
+      batches.actors.submit(
+        this.currentPosition.x,
+        PLAYER_HEIGHT,
+        this.currentPosition.y,
+        rotation,
+        this.visual.worldSize.width,
+        this.visual.worldSize.height,
+        frame,
+        this.tempColor.getHex(),
+        opacity
+      );
     }
 
     if (this.targeted) {
-      const pulse = 1 + Math.sin(this.time * 8) * 0.12;
-      this.reticle.scale.setScalar(this.reticleBaseScale * pulse);
-      this.reticleMaterial.opacity = Math.min(1, 0.25 + (this.isLocal ? 0.35 : 0.2));
-    } else if (this.reticle.visible) {
-      this.reticleMaterial.opacity = Math.max(0, this.reticleMaterial.opacity - deltaSeconds * 3);
-      this.reticle.scale.setScalar(this.reticleBaseScale);
-      if (this.reticleMaterial.opacity <= 0.02) {
-        this.reticle.visible = false;
-      }
+      this.reticleOpacity = Math.min(1, 0.25 + (this.isLocal ? 0.35 : 0.2));
+    } else {
+      this.reticleOpacity = Math.max(0, this.reticleOpacity - deltaSeconds * 3);
     }
-
-    if (this.rig) {
-      const moveRatio = Math.min(1, this.movementSpeed / 180);
-      const attackBoost = this.attackTimer > 0 ? 1 + this.attackTimer * 2.4 : 1;
-      const flapSpeed = 5.2 + moveRatio * 6.4;
-      const flapAmplitude = 0.28 + moveRatio * 0.42 + this.attackTimer * 0.9;
-      const phase = this.time * flapSpeed + this.animationPhase;
-      const flap = Math.sin(phase) * flapAmplitude * attackBoost;
-      this.rig.leftWing.rotation.z = this.rig.base.leftWingZ + flap;
-      this.rig.rightWing.rotation.z = this.rig.base.rightWingZ - flap;
-
-      const headBob = Math.sin(this.time * 3.6 + this.animationPhase * 0.6) * 0.12 * (0.5 + moveRatio);
-      this.rig.head.rotation.x = this.rig.base.headX + headBob - this.attackTimer * 0.5;
-
-      const tailSwing = Math.sin(this.time * 4.4 + this.animationPhase) * 0.18 * (0.4 + moveRatio);
-      this.rig.tail.rotation.x = this.rig.base.tailX + tailSwing + moveRatio * 0.18;
-      this.rig.tail.rotation.y = Math.cos(this.time * 3.1 + this.animationPhase) * 0.22 * (0.3 + moveRatio);
+    const reticleFrame = this.fxVisual?.clips.idle.frames[0];
+    if (reticleFrame && this.reticleOpacity > 0.02) {
+      const pulse = this.targeted ? 1 + Math.sin(this.time * 8) * 0.12 : 1;
+      const scale = this.reticleBaseScale * pulse;
+      batches.ground.submit(
+        this.currentPosition.x,
+        0.2,
+        this.currentPosition.y,
+        this.time * 1.4,
+        scale,
+        scale,
+        reticleFrame,
+        0xfacc15,
+        this.reticleOpacity
+      );
     }
   }
 
@@ -1660,18 +1644,15 @@ class PlayerAvatar {
 
   notifyAttack(): void {
     this.attackTimer = 0.32;
+    this.animator.play('attack', true);
   }
 }
 
 class EnemyAvatar {
-  readonly mesh: Group;
-  private readonly parent: Group;
-  private readonly body: Mesh;
-  private readonly material: MeshBasicMaterial;
-  private readonly telegraph: Mesh;
-  private readonly telegraphMaterial: MeshBasicMaterial;
-  private model: Group | null = null;
-  private rig: EnemyRig | null = null;
+  private readonly atlas: SpriteAtlas;
+  private readonly telegraphVisual: ResolvedVisual | null;
+  private readonly animator = new SpriteAnimator();
+  private visual: ResolvedVisual | null = null;
   private readonly currentPosition = new Vector2();
   private readonly targetPosition = new Vector2();
   private currentFacing = 0;
@@ -1682,77 +1663,33 @@ class EnemyAvatar {
   private attackRange = TILE_SIZE;
   private time = 0;
   private initialized = false;
+  private visible = true;
+  private movementSpeed = 0;
+  private telegraphOpacity = 0;
+  private telegraphTint = 0xffffff;
   private id = '';
   private kind: EnemyKind = 'fox';
-  private baseModelHeight = 9;
   private baseOpacity = 0.95;
 
-  constructor(parent: Group) {
-    this.parent = parent;
-    this.mesh = new Group();
-    this.mesh.renderOrder = 2;
-
-    const bodyGeometry = new PlaneGeometry(20, 20);
-    bodyGeometry.rotateX(-Math.PI / 2);
-    this.material = new MeshBasicMaterial({
-      transparent: true,
-      opacity: 0.95,
-      toneMapped: false
-    });
-    this.material.depthWrite = false;
-    this.body = new Mesh(bodyGeometry, this.material);
-    this.body.position.y = PLAYER_HEIGHT * 0.8;
-    this.body.renderOrder = 2;
-    this.mesh.add(this.body);
-
-    const telegraphGeometry = new PlaneGeometry(1, 1);
-    telegraphGeometry.rotateX(-Math.PI / 2);
-    const telegraphTexture = createRadialTexture('rgba(255,255,255,0.2)', 'rgba(248,113,113,0.42)', 'rgba(248,113,113,0)');
-    this.telegraphMaterial = new MeshBasicMaterial({
-      map: telegraphTexture,
-      transparent: true,
-      opacity: 0,
-      blending: AdditiveBlending,
-      depthWrite: false
-    });
-    this.telegraph = new Mesh(telegraphGeometry, this.telegraphMaterial);
-    this.telegraph.position.y = 0.15;
-    this.telegraph.visible = false;
-    this.mesh.add(this.telegraph);
+  constructor(atlas: SpriteAtlas) {
+    this.atlas = atlas;
+    this.telegraphVisual = atlas.getVisual('fx:telegraph');
   }
 
   reset(id: string, kind: EnemyKind): void {
     this.id = id;
     this.kind = kind;
-    this.time = 0;
+    this.time = Math.random() * 10;
     this.initialized = false;
     this.intent = 'idle';
     this.displayIntentTimer = 0;
     this.displayIntentDuration = 0;
-    if (this.mesh.parent !== this.parent) {
-      this.parent.add(this.mesh);
-    }
-    this.mesh.visible = true;
-    this.material.map = ENEMY_TEXTURES[kind];
-    this.material.needsUpdate = true;
-    this.material.color.setHex(ENEMY_COLORS[kind]);
+    this.visible = true;
+    this.telegraphOpacity = 0;
+    this.movementSpeed = 0;
     this.baseOpacity = kind === 'coyote' ? 1 : 0.95;
-    this.material.opacity = this.baseOpacity;
-    const scale = kind === 'coyote' ? 1.35 : 1;
-    this.body.scale.setScalar(scale);
-    this.telegraphMaterial.opacity = 0;
-    this.telegraphMaterial.color.setHex(kind === 'coyote' ? 0xf59e0b : 0xffffff);
-
-    if (this.model) {
-      this.mesh.remove(this.model);
-      disposeEnemyModel(this.model);
-      this.model = null;
-    }
-    this.model = createEnemyModel(kind);
-    this.rig = (this.model.userData.rig as EnemyRig | undefined) ?? null;
-    this.baseModelHeight = kind === 'coyote' ? 14 : 9;
-    this.model.position.y = this.baseModelHeight;
-    this.mesh.add(this.model);
+    this.visual = this.atlas.getVisual(`enemy:${kind}`);
+    this.animator.setVisual(this.visual);
   }
 
   getKind(): EnemyKind {
@@ -1760,26 +1697,14 @@ class EnemyAvatar {
   }
 
   setVisibility(visible: boolean): void {
-    this.mesh.visible = visible;
-    if (!visible) {
-      this.telegraph.visible = false;
-    }
+    this.visible = visible;
   }
 
   release(): void {
-    if (this.mesh.parent) {
-      this.mesh.parent.remove(this.mesh);
-    }
-    this.mesh.visible = false;
-    this.telegraph.visible = false;
+    this.visible = false;
     this.initialized = false;
     this.intent = 'idle';
-    if (this.model) {
-      this.mesh.remove(this.model);
-      disposeEnemyModel(this.model);
-      this.model = null;
-    }
-    this.rig = null;
+    this.telegraphOpacity = 0;
   }
 
   setState(state: EnemyState): void {
@@ -1787,21 +1712,20 @@ class EnemyAvatar {
     if (Math.abs(state.velocity.x) > 0.01 || Math.abs(state.velocity.y) > 0.01) {
       this.targetFacing = Math.atan2(state.velocity.y, state.velocity.x);
     }
+    this.movementSpeed = Math.hypot(state.velocity.x, state.velocity.y);
     this.intent = state.intent;
     this.displayIntentDuration = state.intentDuration;
     this.displayIntentTimer = state.intentTimer;
     this.attackRange = state.attackRange;
     if (!this.initialized) {
       this.currentPosition.set(state.position.x, state.position.y);
-      this.mesh.position.set(state.position.x, 0, state.position.y);
       this.currentFacing = this.targetFacing;
-      this.mesh.rotation.y = -this.currentFacing + Math.PI / 2;
       this.initialized = true;
     }
   }
 
-  update(deltaSeconds: number): void {
-    if (!this.mesh.visible) {
+  update(deltaSeconds: number, batches: SpriteBatchSet): void {
+    if (!this.visible || !this.initialized) {
       return;
     }
     this.time += deltaSeconds;
@@ -1809,62 +1733,50 @@ class EnemyAvatar {
     this.currentPosition.lerp(this.targetPosition, lerpFactor);
     this.currentFacing = MathUtils.lerp(this.currentFacing, this.targetFacing, lerpFactor);
 
-    this.mesh.position.set(this.currentPosition.x, 0, this.currentPosition.y);
-    this.mesh.rotation.y = -this.currentFacing + Math.PI / 2;
+    if (this.intent === 'windup' || this.intent === 'channel') {
+      this.animator.play('windup');
+    } else if (this.movementSpeed > 6) {
+      this.animator.play('move');
+    } else {
+      this.animator.play('idle');
+    }
+    this.animator.update(deltaSeconds);
 
-    if (this.model) {
-      if (this.intent === 'burrow') {
-        const ratio = this.displayIntentDuration > 0
-          ? Math.max(0, Math.min(1, this.displayIntentTimer / this.displayIntentDuration))
-          : 0.5;
-        const scale = Math.max(0.35, 1 - ratio * 0.75);
-        this.model.scale.setScalar(scale);
-        this.model.position.y = Math.max(2.2, this.baseModelHeight * scale * 0.6);
-        this.material.opacity = Math.max(0.25, this.baseOpacity * scale);
-        this.body.visible = false;
-      } else {
-        const hover = 1 + Math.sin((this.time + this.currentPosition.length() * 0.003) * 3.2) * 0.05;
-        let scale = hover;
-        if (this.intent === 'channel') {
-          scale += 0.12;
-        }
-        this.model.scale.setScalar(scale);
-        this.model.position.y = this.baseModelHeight + Math.sin(this.time * 2.8) * 0.3;
-        this.material.opacity = this.baseOpacity;
-        this.body.visible = true;
-      }
-
-      if (this.kind === 'owl' && this.rig?.leftWing && this.rig?.rightWing) {
-        const base = this.rig.base;
-        const flap = Math.sin(this.time * 5.4 + this.currentPosition.length() * 0.01) * 0.35 + (this.intent === 'channel' ? 0.18 : 0);
-        if (base?.leftWingZ !== undefined) {
-          this.rig.leftWing.rotation.z = base.leftWingZ + flap;
-        }
-        if (base?.rightWingZ !== undefined) {
-          this.rig.rightWing.rotation.z = base.rightWingZ - flap;
-        }
-      }
-
-      if (this.kind === 'weasel' && this.rig?.tail) {
-        const base = this.rig.base;
-        const wag = Math.sin(this.time * 6.2 + this.currentPosition.x * 0.01) * 0.35;
-        if (base?.tailZ !== undefined) {
-          this.rig.tail.rotation.z = base.tailZ + wag;
-        } else {
-          this.rig.tail.rotation.z = wag;
-        }
-        this.rig.tail.rotation.y = Math.cos(this.time * 3.8) * 0.18;
-      }
+    let scale = 1 + Math.sin((this.time + this.currentPosition.length() * 0.003) * 3.2) * 0.04;
+    let opacity = this.baseOpacity;
+    if (this.intent === 'burrow') {
+      const ratio = this.displayIntentDuration > 0
+        ? Math.max(0, Math.min(1, this.displayIntentTimer / this.displayIntentDuration))
+        : 0.5;
+      scale = Math.max(0.35, 1 - ratio * 0.75);
+      opacity = Math.max(0.25, this.baseOpacity * scale);
+    } else if (this.intent === 'channel') {
+      scale += 0.12;
     }
 
-    this.updateTelegraph(deltaSeconds);
+    const frame = this.animator.getFrame();
+    if (this.visual && frame) {
+      batches.actors.submit(
+        this.currentPosition.x,
+        PLAYER_HEIGHT * 0.8,
+        this.currentPosition.y,
+        -this.currentFacing + Math.PI / 2,
+        this.visual.worldSize.width * scale,
+        this.visual.worldSize.height * scale,
+        frame,
+        0xffffff,
+        opacity
+      );
+    }
+
+    this.updateTelegraph(deltaSeconds, batches);
   }
 
-  private updateTelegraph(deltaSeconds: number): void {
+  private updateTelegraph(deltaSeconds: number, batches: SpriteBatchSet): void {
     const diameter = Math.max(24, this.attackRange * 2);
+    let telegraphScale = diameter;
     if (this.intent === 'burrow') {
-      this.telegraph.visible = false;
-      this.telegraphMaterial.opacity = 0;
+      this.telegraphOpacity = 0;
       return;
     }
 
@@ -1872,29 +1784,33 @@ class EnemyAvatar {
       this.displayIntentTimer = Math.max(0, this.displayIntentTimer - deltaSeconds);
       const progress = this.displayIntentDuration > 0 ? 1 - this.displayIntentTimer / this.displayIntentDuration : 1;
       const pulse = 1 + Math.sin((progress + this.time) * Math.PI * 2) * 0.08;
-      this.telegraph.visible = true;
-      this.telegraph.scale.setScalar(diameter * pulse);
-      this.telegraphMaterial.opacity = Math.min(0.9, 0.25 + progress * 0.55);
-      this.telegraphMaterial.color.setHex(this.kind === 'owl' ? 0xfde68a : this.kind === 'coyote' ? 0xf59e0b : 0xffffff);
+      telegraphScale = diameter * pulse;
+      this.telegraphOpacity = Math.min(0.9, 0.25 + progress * 0.55);
+      this.telegraphTint = this.kind === 'owl' ? 0xfde68a : this.kind === 'coyote' ? 0xf59e0b : 0xf87171;
     } else if (this.intent === 'recover') {
-      this.telegraph.visible = true;
-      this.telegraph.scale.setScalar(diameter);
-      this.telegraphMaterial.opacity = Math.max(0, this.telegraphMaterial.opacity - deltaSeconds * 1.6);
-      if (this.telegraphMaterial.opacity <= 0.02) {
-        this.telegraph.visible = false;
-      }
+      this.telegraphOpacity = Math.max(0, this.telegraphOpacity - deltaSeconds * 1.6);
     } else if (this.intent === 'channel') {
       const pulse = 1 + Math.sin((this.time + this.floatOffset()) * 6) * 0.12;
-      this.telegraph.visible = true;
-      this.telegraph.scale.setScalar(diameter * pulse);
-      this.telegraphMaterial.color.setHex(this.kind === 'owl' ? 0xd8b4fe : 0xffffff);
-      this.telegraphMaterial.opacity = 0.32 + Math.sin((this.time + this.floatOffset()) * 4) * 0.12;
-    } else if (this.telegraph.visible) {
-      this.telegraphMaterial.opacity = Math.max(0, this.telegraphMaterial.opacity - deltaSeconds * 2.2);
-      this.telegraph.scale.setScalar(diameter);
-      if (this.telegraphMaterial.opacity <= 0.02) {
-        this.telegraph.visible = false;
-      }
+      telegraphScale = diameter * pulse;
+      this.telegraphTint = this.kind === 'owl' ? 0xd8b4fe : 0xf87171;
+      this.telegraphOpacity = 0.32 + Math.sin((this.time + this.floatOffset()) * 4) * 0.12;
+    } else {
+      this.telegraphOpacity = Math.max(0, this.telegraphOpacity - deltaSeconds * 2.2);
+    }
+
+    const frame = this.telegraphVisual?.clips.idle.frames[0];
+    if (frame && this.telegraphOpacity > 0.02) {
+      batches.ground.submit(
+        this.currentPosition.x,
+        0.15,
+        this.currentPosition.y,
+        0,
+        telegraphScale,
+        telegraphScale,
+        frame,
+        this.telegraphTint,
+        this.telegraphOpacity
+      );
     }
   }
 
@@ -1904,12 +1820,13 @@ class EnemyAvatar {
 }
 
 class ProjectileAvatar {
-  readonly mesh: Mesh;
+  private readonly atlas: SpriteAtlas;
   private readonly parent: Group;
   private readonly trail: Line;
   private readonly trailGeometry: BufferGeometry;
   private readonly trailMaterial: LineBasicMaterial;
-  private readonly material: MeshBasicMaterial;
+  private readonly animator = new SpriteAnimator();
+  private visual: ResolvedVisual | null = null;
   private readonly currentPosition = new Vector2();
   private readonly targetPosition = new Vector2();
   private readonly history: Vector2[] = [];
@@ -1918,24 +1835,16 @@ class ProjectileAvatar {
   private displayTtl = PROJECTILE_LIFETIME;
   private serverTtl = PROJECTILE_LIFETIME;
   private initialized = false;
+  private visible = true;
   private id = '';
   private faction: ProjectileFaction = 'player';
+  private tint = PROJECTILE_STYLE.player.body;
   private impactColor = PROJECTILE_STYLE.player.impact;
   private power = 0;
 
-  constructor(parent: Group) {
+  constructor(parent: Group, atlas: SpriteAtlas) {
+    this.atlas = atlas;
     this.parent = parent;
-    const geometry = new PlaneGeometry(12, 12);
-    geometry.rotateX(-Math.PI / 2);
-    this.material = new MeshBasicMaterial({
-      transparent: true,
-      opacity: 0.75,
-      blending: AdditiveBlending,
-      depthWrite: false
-    });
-    this.mesh = new Mesh(geometry, this.material);
-    this.mesh.position.y = PLAYER_HEIGHT * 0.9;
-    this.mesh.renderOrder = 3;
 
     this.trailGeometry = new BufferGeometry();
     const positions = new Float32Array(PROJECTILE_TRAIL_LENGTH * 3);
@@ -1953,20 +1862,19 @@ class ProjectileAvatar {
   reset(id: string, faction: ProjectileFaction): void {
     this.id = id;
     this.faction = faction;
+    this.visual = this.atlas.getVisual(`projectile:${faction}`);
+    this.animator.setVisual(this.visual);
+    this.tint = this.visual?.tint ?? PROJECTILE_STYLE[faction].body;
     this.impactColor = PROJECTILE_STYLE[faction].impact;
-    this.material.color.setHex(PROJECTILE_STYLE[faction].body);
     this.trailMaterial.color.setHex(PROJECTILE_STYLE[faction].trail);
     this.initialized = false;
+    this.visible = true;
     this.displayTtl = PROJECTILE_LIFETIME;
     this.serverTtl = PROJECTILE_LIFETIME;
     this.history.length = 0;
-    if (this.mesh.parent !== this.parent) {
-      this.parent.add(this.mesh);
-    }
     if (this.trail.parent !== this.parent) {
       this.parent.add(this.trail);
     }
-    this.mesh.visible = true;
     this.trail.visible = true;
   }
 
@@ -1979,7 +1887,7 @@ class ProjectileAvatar {
   }
 
   setVisibility(visible: boolean): void {
-    this.mesh.visible = visible;
+    this.visible = visible;
     this.trail.visible = visible;
   }
 
@@ -1997,23 +1905,35 @@ class ProjectileAvatar {
     this.power = power;
   }
 
-  update(deltaSeconds: number): void {
-    if (!this.mesh.visible) {
+  update(deltaSeconds: number, batches: SpriteBatchSet): void {
+    if (!this.visible || !this.initialized) {
       return;
     }
     const lerpFactor = Math.min(1, deltaSeconds * 18);
     this.currentPosition.lerp(this.targetPosition, lerpFactor);
     this.currentFacing = MathUtils.lerp(this.currentFacing, this.targetFacing, lerpFactor);
     this.displayTtl = Math.max(0, this.displayTtl - deltaSeconds);
+    this.animator.update(deltaSeconds);
 
     const lifeRatio = Math.max(0, Math.min(1, this.displayTtl / PROJECTILE_LIFETIME));
     const powerScale = Math.min(1, this.power / 50);
-    this.material.opacity = 0.35 + (1 - lifeRatio) * 0.6 + powerScale * 0.1;
+    const opacity = 0.35 + (1 - lifeRatio) * 0.6 + powerScale * 0.1;
     const scale = 0.85 + (1 - lifeRatio) * 0.3 + powerScale * 0.2;
-    this.mesh.scale.set(scale, scale, scale);
 
-    this.mesh.position.set(this.currentPosition.x, PLAYER_HEIGHT * 0.9, this.currentPosition.y);
-    this.mesh.rotation.y = -this.currentFacing + Math.PI / 2;
+    const frame = this.animator.getFrame();
+    if (this.visual && frame) {
+      batches.fx.submit(
+        this.currentPosition.x,
+        PLAYER_HEIGHT * 0.9,
+        this.currentPosition.y,
+        -this.currentFacing + Math.PI / 2,
+        this.visual.worldSize.width * scale,
+        this.visual.worldSize.height * scale,
+        frame,
+        this.tint,
+        opacity
+      );
+    }
 
     const latest = this.history[this.history.length - 1];
     if (!latest || latest.distanceToSquared(this.currentPosition) > 4) {
@@ -2048,15 +1968,12 @@ class ProjectileAvatar {
   }
 
   release(): void {
-    if (this.mesh.parent) {
-      this.mesh.parent.remove(this.mesh);
-    }
     if (this.trail.parent) {
       this.trail.parent.remove(this.trail);
     }
     this.history.length = 0;
     this.initialized = false;
-    this.mesh.visible = false;
+    this.visible = false;
     this.trail.visible = false;
     this.trailGeometry.setDrawRange(0, 0);
   }
@@ -2070,49 +1987,58 @@ class ProjectileAvatar {
   }
 }
 
-/* eslint-disable @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access */
+type ImpactState = {
+  x: number;
+  y: number;
+  tint: number;
+  remaining: number;
+  initial: number;
+};
 
 class ImpactSystem {
-  readonly group = new Group();
-  private readonly pool: Mesh<PlaneGeometry, MeshBasicMaterial>[] = [];
-  private readonly active: Mesh<PlaneGeometry, MeshBasicMaterial>[] = [];
-  private readonly geometry: PlaneGeometry;
-  private readonly baseTexture: CanvasTexture;
+  private readonly visual: ResolvedVisual | null;
+  private readonly active: ImpactState[] = [];
+  private readonly pool: ImpactState[] = [];
 
-  constructor() {
-    this.geometry = new PlaneGeometry(18, 18);
-    this.geometry.rotateX(-Math.PI / 2);
-    this.baseTexture = createRadialTexture('rgba(255,255,255,0.9)', 'rgba(144,205,244,0.35)', 'rgba(13,23,42,0)');
+  constructor(atlas: SpriteAtlas) {
+    this.visual = atlas.getVisual('fx:impact');
   }
 
   spawn(x: number, y: number, color: number): void {
-    const mesh = this.pool.pop() ?? this.createImpactMesh();
-    const material = mesh.material;
-    material.color.setHex(color);
-    material.opacity = 0.8;
-    mesh.position.set(x, 1.4, y);
-    mesh.scale.setScalar(0.4);
-    mesh.userData.remaining = 0.28;
-    mesh.userData.initial = 0.28;
-    this.group.add(mesh);
-    this.active.push(mesh);
+    const impact = this.pool.pop() ?? { x: 0, y: 0, tint: 0xffffff, remaining: 0, initial: 0 };
+    impact.x = x;
+    impact.y = y;
+    impact.tint = color;
+    impact.remaining = 0.28;
+    impact.initial = 0.28;
+    this.active.push(impact);
   }
 
-  update(deltaSeconds: number): void {
+  update(deltaSeconds: number, batch: SpriteBatch): void {
+    const frame = this.visual?.clips.idle.frames[0];
     for (let i = this.active.length - 1; i >= 0; i -= 1) {
-      const mesh = this.active[i];
-      mesh.userData.remaining -= deltaSeconds;
-      const remaining: number = mesh.userData.remaining;
-      const initial: number = mesh.userData.initial;
-      if (remaining <= 0) {
+      const impact = this.active[i];
+      impact.remaining -= deltaSeconds;
+      if (impact.remaining <= 0) {
         this.recycle(i);
         continue;
       }
-      const ratio = Math.max(0, Math.min(1, remaining / initial));
+      if (!frame || !this.visual) {
+        continue;
+      }
+      const ratio = Math.max(0, Math.min(1, impact.remaining / impact.initial));
       const scale = 0.5 + (1 - ratio) * 1.8;
-      mesh.scale.setScalar(scale);
-      const material = mesh.material;
-      material.opacity = 0.15 + ratio * 0.65;
+      batch.submit(
+        impact.x,
+        1.4,
+        impact.y,
+        0,
+        this.visual.worldSize.width * scale,
+        this.visual.worldSize.height * scale,
+        frame,
+        impact.tint,
+        0.15 + ratio * 0.65
+      );
     }
   }
 
@@ -2122,29 +2048,13 @@ class ImpactSystem {
     }
   }
 
-  private createImpactMesh(): Mesh<PlaneGeometry, MeshBasicMaterial> {
-    const material = new MeshBasicMaterial({
-      map: this.baseTexture,
-      transparent: true,
-      blending: AdditiveBlending,
-      depthWrite: false,
-      toneMapped: false
-    });
-    const mesh = new Mesh(this.geometry, material);
-    mesh.renderOrder = 5;
-    mesh.userData.remaining = 0;
-    mesh.userData.initial = 0;
-    return mesh;
-  }
-
   private recycle(index: number): void {
-    const mesh = this.active[index];
-    this.group.remove(mesh);
-    mesh.material.opacity = 0;
-    this.pool.push(mesh);
+    this.pool.push(this.active[index]);
     this.active.splice(index, 1);
   }
 }
+
+/* eslint-disable @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access */
 
 class PsychicPulseSystem {
   readonly group = new Group();
@@ -2419,107 +2329,6 @@ class XpOrb {
     this.mesh.geometry.dispose();
     disposeMaterial(this.material);
   }
-}
-
-function createChickenTexture(): CanvasTexture {
-  const size = 64;
-  const canvas = document.createElement('canvas');
-  canvas.width = size;
-  canvas.height = size;
-  const ctx = canvas.getContext('2d');
-  if (!ctx) {
-    throw new Error('Failed to create chicken texture context');
-  }
-  ctx.imageSmoothingEnabled = false;
-  ctx.clearRect(0, 0, size, size);
-
-  const centerX = size / 2;
-  const centerY = size / 2 + 6;
-
-  ctx.fillStyle = '#fef3c7';
-  ctx.beginPath();
-  ctx.ellipse(centerX, centerY, size * 0.22, size * 0.28, 0, 0, Math.PI * 2);
-  ctx.fill();
-
-  ctx.fillStyle = '#fde68a';
-  ctx.beginPath();
-  ctx.ellipse(centerX - 6, centerY + 2, size * 0.14, size * 0.18, 0.3, 0, Math.PI * 2);
-  ctx.fill();
-
-  ctx.fillStyle = '#f87171';
-  ctx.beginPath();
-  ctx.moveTo(centerX, centerY - size * 0.32);
-  ctx.lineTo(centerX + size * 0.08, centerY - size * 0.18);
-  ctx.lineTo(centerX - size * 0.08, centerY - size * 0.18);
-  ctx.closePath();
-  ctx.fill();
-
-  ctx.fillStyle = '#1e293b';
-  ctx.beginPath();
-  ctx.arc(centerX + size * 0.05, centerY - size * 0.1, size * 0.04, 0, Math.PI * 2);
-  ctx.fill();
-
-  ctx.strokeStyle = 'rgba(250, 204, 21, 0.75)';
-  ctx.lineWidth = size * 0.08;
-  ctx.beginPath();
-  ctx.ellipse(centerX, centerY, size * 0.24, size * 0.32, 0, 0, Math.PI * 2);
-  ctx.stroke();
-
-  const texture = new CanvasTexture(canvas);
-  texture.magFilter = NearestFilter;
-  texture.minFilter = NearestFilter;
-  texture.needsUpdate = true;
-  return texture;
-}
-
-function createEnemyTextures(): Record<EnemyKind, CanvasTexture> {
-  return {
-    fox: createEnemyTexture('#fb923c', '#fde68a'),
-    hawk: createEnemyTexture('#bfdbfe', '#f8fafc'),
-    snake: createEnemyTexture('#4ade80', '#bbf7d0'),
-    raccoon: createEnemyTexture('#9ca3af', '#f3f4f6'),
-    coyote: createEnemyTexture('#fbbf24', '#fef3c7'),
-    weasel: createEnemyTexture('#f9738f', '#ffe4e6'),
-    owl: createEnemyTexture('#c4b5fd', '#ede9fe')
-  };
-}
-
-function createEnemyTexture(baseColor: string, highlightColor: string): CanvasTexture {
-  const size = 64;
-  const canvas = document.createElement('canvas');
-  canvas.width = size;
-  canvas.height = size;
-  const ctx = canvas.getContext('2d');
-  if (!ctx) {
-    throw new Error('Failed to create enemy texture context');
-  }
-  ctx.imageSmoothingEnabled = false;
-  ctx.clearRect(0, 0, size, size);
-
-  const cx = size / 2;
-  const cy = size / 2 + 4;
-
-  ctx.fillStyle = baseColor;
-  ctx.beginPath();
-  ctx.ellipse(cx, cy, size * 0.25, size * 0.28, 0, 0, Math.PI * 2);
-  ctx.fill();
-
-  ctx.fillStyle = highlightColor;
-  ctx.beginPath();
-  ctx.ellipse(cx + 4, cy - 4, size * 0.12, size * 0.16, 0.4, 0, Math.PI * 2);
-  ctx.fill();
-
-  ctx.strokeStyle = 'rgba(255,255,255,0.55)';
-  ctx.lineWidth = size * 0.06;
-  ctx.beginPath();
-  ctx.ellipse(cx, cy, size * 0.27, size * 0.32, 0, 0, Math.PI * 2);
-  ctx.stroke();
-
-  const texture = new CanvasTexture(canvas);
-  texture.magFilter = NearestFilter;
-  texture.minFilter = NearestFilter;
-  texture.needsUpdate = true;
-  return texture;
 }
 
 function createBiomeMaterials(biome: LevelData['biome'], seed: number): {

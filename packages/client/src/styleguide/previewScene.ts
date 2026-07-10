@@ -1,540 +1,343 @@
-import {
-  AmbientLight,
-  Color,
-  DirectionalLight,
-  Group,
-  MathUtils,
-  Mesh,
-  MeshStandardMaterial,
-  PerspectiveCamera,
-  PlaneGeometry,
-  Scene,
-  Vector2,
-  Vector3,
-  WebGLRenderer
-} from 'three';
-
 import type { EnemyKind } from '@starbuds/shared';
 
-import { applyChickenTint, buildBaseChickenRig, createCosmeticAttachment, type ChickenRig } from '../game/armoryAssets';
-import { ArmoryEffects } from '../game/armoryEffects';
-import { createEnemyModel, disposeEnemyModel, type EnemyRig } from '../game/enemyAssets';
-
-const HERO_DEFAULT_TINT = 0xfacc15;
-const GROUND_COLOR = 0x0e172a;
-const GROUND_EMISSIVE = 0x1f2a44;
+import { SpriteAnimator, loadSkin, type ResolvedVisual, type SpriteAtlas } from '../game/sprites';
 
 export type HeroPose = 'idle' | 'run' | 'attack';
 
-class HeroPreview {
-  readonly group: Group;
+const POSE_TO_CLIP: Record<HeroPose, string> = {
+  idle: 'idle',
+  run: 'move',
+  attack: 'attack'
+};
 
-  private readonly rigInstance: { group: Group; rig: ChickenRig; dispose: () => void };
-  private readonly effects: ArmoryEffects;
+const UPGRADE_COLORS: Record<string, string> = {
+  'focus-matrix': '#38bdf8',
+  'celerity-core': '#22d3ee',
+  'bulwark-weave': '#34d399',
+  'rift-channeler': '#818cf8',
+  'magnet-surge': '#facc15'
+};
 
-  private currentTint = HERO_DEFAULT_TINT;
-  private currentPose: HeroPose = 'run';
-  private targetMovement = 1;
-  private movementBlend = 1;
-  private attackTimer = 0;
+/**
+ * Sprite styleguide stage. Renders any skinnable entity (hero, enemies,
+ * cosmetics, upgrade pulses) from the shared atlas at high zoom, with a
+ * filmstrip of every animation clip below the live view — the reference
+ * surface for authoring new skins (see docs/skinning.md).
+ */
+export class StyleguidePreview {
+  private readonly canvas: HTMLCanvasElement;
+  private readonly ctx: CanvasRenderingContext2D;
+  private readonly animator = new SpriteAnimator();
+  private readonly cosmeticAnimator = new SpriteAnimator();
+  private readonly tintCanvas = document.createElement('canvas');
+  private readonly resizeObserver: ResizeObserver;
+
+  private atlas: SpriteAtlas | null = null;
+  private visual: ResolvedVisual | null = null;
+  private cosmeticVisual: ResolvedVisual | null = null;
+  private entityKey = 'player';
+  private heroPose: HeroPose = 'run';
+  private heroTint = 0xfacc15;
+  private heroCosmetic: string | null = null;
+  private heroUpgrade: string | null = null;
+  private autoRotate = true;
+  private rotation = 0;
+  private autoRotateListener: ((enabled: boolean) => void) | null = null;
+  private requestId: number | null = null;
+  private lastFrame = 0;
   private time = 0;
-  private orbitTime = 0;
-  private cosmetic: { id: string; group: Group } | null = null;
-  private upgradeId: string | null = null;
+  private disposed = false;
+  private dragging = false;
+  private dragStartX = 0;
+  private dragStartRotation = 0;
 
-  constructor() {
-    this.group = new Group();
-    this.group.position.set(0, 0, 0);
-
-    this.rigInstance = buildBaseChickenRig({ primaryColor: this.currentTint, scale: 0.78 });
-    this.rigInstance.group.position.set(0, 0, 0);
-    this.rigInstance.group.rotation.y = Math.PI / 8;
-    this.group.add(this.rigInstance.group);
-
-    this.effects = new ArmoryEffects();
-    this.effects.group.position.set(0, 0, 0);
-    this.group.add(this.effects.group);
-  }
-
-  getFocusHeight(): number {
-    return 8;
-  }
-
-  setTint(color: number): void {
-    if (this.currentTint === color) {
-      return;
+  constructor(stage: HTMLElement) {
+    this.canvas = document.createElement('canvas');
+    this.canvas.style.width = '100%';
+    this.canvas.style.height = '100%';
+    this.canvas.style.touchAction = 'none';
+    this.canvas.style.cursor = 'grab';
+    stage.appendChild(this.canvas);
+    const ctx = this.canvas.getContext('2d');
+    if (!ctx) {
+      throw new Error('Failed to create styleguide preview context');
     }
-    this.currentTint = color;
-    applyChickenTint(this.rigInstance.group, color);
-    if (this.cosmetic) {
-      const currentId = this.cosmetic.id;
-      this.removeCosmetic();
-      this.setCosmetic(currentId);
-    }
-  }
+    this.ctx = ctx;
 
-  setCosmetic(id: string | null): void {
-    if (this.cosmetic?.id === id) {
-      return;
-    }
-    this.removeCosmetic();
-    if (!id) {
-      return;
-    }
-    const attachment = createCosmeticAttachment(id, { tint: this.currentTint });
-    if (!attachment) {
-      return;
-    }
-    this.positionAttachment(attachment);
-    this.rigInstance.group.add(attachment);
-    this.cosmetic = { id, group: attachment };
-  }
+    this.resizeObserver = new ResizeObserver(() => this.resize(stage));
+    this.resizeObserver.observe(stage);
+    this.resize(stage);
 
-  setUpgrade(id: string | null): void {
-    if (this.upgradeId === id) {
-      return;
-    }
-    if (!id) {
-      this.effects.stopLoop();
-      this.upgradeId = null;
-      return;
-    }
-    this.effects.playLoop(id, this.rigInstance.rig);
-    this.upgradeId = id;
-  }
+    this.canvas.addEventListener('pointerdown', this.onPointerDown);
+    window.addEventListener('pointermove', this.onPointerMove);
+    window.addEventListener('pointerup', this.onPointerUp);
 
-  setPose(pose: HeroPose): void {
-    if (this.currentPose === pose) {
-      return;
-    }
-    this.currentPose = pose;
-    if (pose === 'idle') {
-      this.targetMovement = 0.08;
-    } else if (pose === 'run') {
-      this.targetMovement = 1;
-      this.attackTimer = 0;
-    } else {
-      this.targetMovement = 1.1;
-      this.attackTimer = 0.32;
-    }
-  }
-
-  update(deltaSeconds: number): void {
-    this.time += deltaSeconds;
-    this.orbitTime += deltaSeconds;
-    const rig = this.rigInstance.rig;
-
-    this.movementBlend = MathUtils.lerp(this.movementBlend, this.targetMovement, Math.min(1, deltaSeconds * 3.2));
-
-    if (this.currentPose === 'attack') {
-      this.attackTimer -= deltaSeconds;
-      if (this.attackTimer <= 0) {
-        this.attackTimer = 0.32;
-      }
-    } else {
-      this.attackTimer = Math.max(0, this.attackTimer - deltaSeconds * 1.5);
-    }
-
-    const attackBoost = 1 + (this.attackTimer > 0 ? this.attackTimer * 2.4 : 0);
-    const flapSpeed = 5.2 + this.movementBlend * 6.4;
-    const flapAmplitude = 0.28 + this.movementBlend * 0.42;
-    const phase = this.time * flapSpeed;
-    const flap = Math.sin(phase) * flapAmplitude * attackBoost;
-
-    rig.leftWing.rotation.z = rig.base.leftWingZ + flap;
-    rig.rightWing.rotation.z = rig.base.rightWingZ - flap;
-
-    const headBob = Math.sin(this.time * 3.4) * 0.12 * (0.5 + this.movementBlend);
-    rig.head.rotation.x = rig.base.headX + headBob - Math.max(0, this.attackTimer * 0.6);
-
-    const tailSwing = Math.sin(this.time * 4.2) * 0.18 * (0.4 + this.movementBlend);
-    rig.tail.rotation.x = rig.base.tailX + tailSwing + this.movementBlend * 0.18;
-    rig.tail.rotation.y = Math.cos(this.time * 3.1) * 0.22 * (0.3 + this.movementBlend);
-
-    this.rigInstance.group.rotation.y = Math.PI / 8 + Math.sin(this.orbitTime * 0.4) * 0.08;
-
-    this.effects.update(deltaSeconds);
-  }
-
-  dispose(): void {
-    this.effects.dispose();
-    this.removeCosmetic();
-    this.rigInstance.dispose();
-  }
-
-  private removeCosmetic(): void {
-    if (!this.cosmetic) {
-      return;
-    }
-    this.rigInstance.group.remove(this.cosmetic.group);
-    this.disposeCosmetic(this.cosmetic.group);
-    this.cosmetic = null;
-  }
-
-  private positionAttachment(group: Group): void {
-    const anchors = (group.userData as { anchors?: Record<string, Vector3> }).anchors ?? null;
-    group.position.set(0, 0, 0);
-    group.rotation.set(0, 0, 0);
-    if (!anchors) {
-      return;
-    }
-    if (anchors.crest) {
-      group.position.copy(anchors.crest);
-    } else if (anchors.tail) {
-      group.position.copy(anchors.tail);
-    } else if (anchors.back) {
-      group.position.copy(anchors.back);
-    }
-  }
-
-  /* eslint-disable @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access */
-  private disposeCosmetic(node: Group): void {
-    node.traverse((child) => {
-      if (!(child instanceof Mesh)) {
+    void loadSkin().then((atlas) => {
+      if (this.disposed) {
         return;
       }
-      const materials = Array.isArray(child.material) ? child.material : [child.material];
-      for (const material of materials) {
-        if (material && typeof material.dispose === 'function') {
-          (material as MeshStandardMaterial).dispose();
-        }
-      }
-      child.geometry.dispose();
+      this.atlas = atlas;
+      this.refreshVisual();
     });
-  }
-  /* eslint-enable @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access */
-}
 
-class EnemyPreview {
-  readonly group: Group;
-
-  private kind: EnemyKind | null = null;
-  private model: Group | null = null;
-  private rig: EnemyRig | null = null;
-  private baseHeight = 9;
-  private time = 0;
-
-  constructor() {
-    this.group = new Group();
-    this.group.visible = false;
-  }
-
-  getFocusHeight(): number {
-    return this.baseHeight;
-  }
-
-  setKind(kind: EnemyKind): void {
-    if (this.kind === kind) {
-      return;
-    }
-    if (this.model) {
-      this.group.remove(this.model);
-      disposeEnemyModel(this.model);
-      this.model = null;
-      this.rig = null;
-    }
-    this.model = createEnemyModel(kind);
-    this.rig = (this.model.userData.rig as EnemyRig | undefined) ?? null;
-    this.baseHeight = kind === 'coyote' ? 14 : 9;
-    this.model.position.set(0, this.baseHeight, 0);
-    this.model.rotation.y = Math.PI / 6;
-    this.group.add(this.model);
-    this.group.visible = true;
-    this.kind = kind;
-    this.time = 0;
-  }
-
-  update(deltaSeconds: number): void {
-    if (!this.model || !this.kind) {
-      return;
-    }
-    this.time += deltaSeconds;
-    const hover = Math.sin(this.time * 2.6) * 0.4;
-    this.model.position.y = this.baseHeight + hover;
-    this.model.rotation.y = Math.sin(this.time * 0.6) * 0.2 + Math.PI / 6;
-
-    if (this.kind === 'owl' && this.rig?.leftWing && this.rig?.rightWing && this.rig.base) {
-      const flap = Math.sin(this.time * 5.4) * 0.35;
-      if (this.rig.base.leftWingZ !== undefined) {
-        this.rig.leftWing.rotation.z = this.rig.base.leftWingZ + flap;
-      }
-      if (this.rig.base.rightWingZ !== undefined) {
-        this.rig.rightWing.rotation.z = this.rig.base.rightWingZ - flap;
-      }
-    }
-
-    if (this.kind === 'weasel' && this.rig?.tail) {
-      const wag = Math.sin(this.time * 6.2) * 0.35;
-      if (this.rig.base?.tailZ !== undefined) {
-        this.rig.tail.rotation.z = this.rig.base.tailZ + wag;
-      } else {
-        this.rig.tail.rotation.z = wag;
-      }
-      this.rig.tail.rotation.y = Math.cos(this.time * 3.8) * 0.18;
-    }
-  }
-
-  dispose(): void {
-    if (this.model) {
-      this.group.remove(this.model);
-      disposeEnemyModel(this.model);
-      this.model = null;
-    }
-    this.rig = null;
-    this.kind = null;
-  }
-}
-
-export class StyleguidePreview {
-  private readonly container: HTMLElement;
-  private readonly renderer: WebGLRenderer;
-  private readonly scene: Scene;
-  private readonly camera: PerspectiveCamera;
-  private readonly root: Group;
-  private readonly hero: HeroPreview;
-  private readonly enemy: EnemyPreview;
-  private readonly resizeObserver: ResizeObserver;
-  private readonly wheelListenerOptions: AddEventListenerOptions = { passive: false };
-
-  private mode: 'hero' | 'enemy' = 'hero';
-  private autoRotate = true;
-  private autoRotateListener: ((enabled: boolean) => void) | null = null;
-  private readonly cameraTarget = new Vector3(0, 8, 0);
-  private cameraRadius = 32;
-  private cameraAzimuth = Math.PI / 6;
-  private cameraPolar = MathUtils.degToRad(32);
-  private readonly minPolar = MathUtils.degToRad(10);
-  private readonly maxPolar = MathUtils.degToRad(80);
-  private readonly minRadius = 10;
-  private readonly maxRadius = 70;
-  private isDragging = false;
-  private activePointerId: number | null = null;
-  private dragStart = new Vector2();
-  private startAzimuth = 0;
-  private startPolar = 0;
-  private lastFrame = 0;
-  private rafId: number | null = null;
-  private cameraDirty = true;
-
-  constructor(container: HTMLElement) {
-    this.container = container;
-    this.renderer = new WebGLRenderer({ antialias: true, alpha: false });
-    this.renderer.setClearColor(new Color(0x070c16), 1);
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio ?? 1, 2));
-    container.appendChild(this.renderer.domElement);
-
-    this.scene = new Scene();
-    this.camera = new PerspectiveCamera(32, 1, 0.1, 200);
-    this.camera.position.set(0, 14, 32);
-    this.camera.lookAt(this.cameraTarget);
-
-    const offset = this.camera.position.clone().sub(this.cameraTarget);
-    this.cameraRadius = offset.length();
-    this.cameraAzimuth = Math.atan2(offset.x, offset.z);
-    const normalizedY = MathUtils.clamp(offset.y / this.cameraRadius, -1, 1);
-    this.cameraPolar = Math.acos(normalizedY);
-
-    const ambient = new AmbientLight(0xdbeafe, 0.6);
-    this.scene.add(ambient);
-    const keyLight = new DirectionalLight(0xffffff, 0.8);
-    keyLight.position.set(18, 24, 18);
-    this.scene.add(keyLight);
-    const rimLight = new DirectionalLight(0x60a5fa, 0.35);
-    rimLight.position.set(-20, 18, -12);
-    this.scene.add(rimLight);
-
-    this.root = new Group();
-    this.scene.add(this.root);
-
-    const ground = new Mesh(
-      new PlaneGeometry(46, 46),
-      new MeshStandardMaterial({ color: GROUND_COLOR, emissive: new Color(GROUND_EMISSIVE), roughness: 0.85, metalness: 0.05 })
-    );
-    ground.rotation.x = -Math.PI / 2;
-    ground.position.y = -0.02;
-    ground.receiveShadow = false;
-    this.root.add(ground);
-
-    this.hero = new HeroPreview();
-    this.root.add(this.hero.group);
-
-    this.enemy = new EnemyPreview();
-    this.root.add(this.enemy.group);
-
-    this.setMode('hero');
-    this.updateCamera();
-
-    this.renderer.domElement.addEventListener('pointerdown', this.handlePointerDown);
-    this.renderer.domElement.addEventListener('pointermove', this.handlePointerMove);
-    this.renderer.domElement.addEventListener('pointerup', this.handlePointerUpOrCancel);
-    this.renderer.domElement.addEventListener('pointerleave', this.handlePointerUpOrCancel);
-    this.renderer.domElement.addEventListener('pointercancel', this.handlePointerUpOrCancel);
-    this.renderer.domElement.addEventListener('wheel', this.handleWheel, this.wheelListenerOptions);
-
-    this.resizeObserver = new ResizeObserver(() => this.resize());
-    this.resizeObserver.observe(this.container);
-    window.addEventListener('resize', this.handleWindowResize);
-    this.resize();
-    this.tick(performance.now());
-  }
-
-  setMode(mode: 'hero' | 'enemy'): void {
-    this.mode = mode;
-    this.hero.group.visible = mode === 'hero';
-    this.enemy.group.visible = mode === 'enemy';
-    this.updateFocusHeight();
-  }
-
-  setHeroTint(color: number): void {
-    this.hero.setTint(color);
-  }
-
-  setHeroCosmetic(id: string | null): void {
-    this.hero.setCosmetic(id);
-  }
-
-  setHeroUpgrade(id: string | null): void {
-    this.hero.setUpgrade(id);
-  }
-
-  setHeroPose(pose: HeroPose): void {
-    this.hero.setPose(pose);
-  }
-
-  setEnemyKind(kind: EnemyKind): void {
-    this.enemy.setKind(kind);
-    this.setMode('enemy');
-  }
-
-  setAutoRotate(enabled: boolean): void {
-    if (this.autoRotate === enabled) {
-      return;
-    }
-    this.autoRotate = enabled;
-    this.autoRotateListener?.(enabled);
+    this.requestId = window.requestAnimationFrame((time) => this.tick(time));
   }
 
   setAutoRotateChangeListener(listener: (enabled: boolean) => void): void {
     this.autoRotateListener = listener;
-    listener(this.autoRotate);
+  }
+
+  setMode(mode: 'hero'): void {
+    void mode;
+    this.entityKey = 'player';
+    this.refreshVisual();
+  }
+
+  setEnemyKind(kind: EnemyKind): void {
+    this.entityKey = `enemy:${kind}`;
+    this.refreshVisual();
+  }
+
+  setHeroTint(tint: number): void {
+    this.heroTint = tint;
+  }
+
+  setHeroPose(pose: HeroPose): void {
+    this.heroPose = pose;
+    if (this.entityKey === 'player') {
+      this.animator.play(POSE_TO_CLIP[pose]);
+    }
+  }
+
+  setHeroCosmetic(id: string | null): void {
+    this.heroCosmetic = id;
+    this.refreshCosmetic();
+  }
+
+  setHeroUpgrade(id: string | null): void {
+    this.heroUpgrade = id;
+  }
+
+  setAutoRotate(enabled: boolean): void {
+    this.autoRotate = enabled;
   }
 
   dispose(): void {
-    if (this.rafId !== null) {
-      cancelAnimationFrame(this.rafId);
-      this.rafId = null;
+    this.disposed = true;
+    if (this.requestId !== null) {
+      window.cancelAnimationFrame(this.requestId);
+      this.requestId = null;
     }
     this.resizeObserver.disconnect();
-    window.removeEventListener('resize', this.handleWindowResize);
-    const canvas = this.renderer.domElement;
-    canvas.removeEventListener('pointerdown', this.handlePointerDown);
-    canvas.removeEventListener('pointermove', this.handlePointerMove);
-    canvas.removeEventListener('pointerup', this.handlePointerUpOrCancel);
-    canvas.removeEventListener('pointerleave', this.handlePointerUpOrCancel);
-    canvas.removeEventListener('pointercancel', this.handlePointerUpOrCancel);
-    canvas.removeEventListener('wheel', this.handleWheel, this.wheelListenerOptions);
-    this.hero.dispose();
-    this.enemy.dispose();
-    this.renderer.dispose();
-    if (canvas.parentElement === this.container) {
-      this.container.removeChild(canvas);
-    }
+    this.canvas.removeEventListener('pointerdown', this.onPointerDown);
+    window.removeEventListener('pointermove', this.onPointerMove);
+    window.removeEventListener('pointerup', this.onPointerUp);
+    this.canvas.remove();
   }
 
-  private tick = (time: number): void => {
-    const delta = this.lastFrame === 0 ? 0 : Math.min(0.05, (time - this.lastFrame) / 1000);
-    this.lastFrame = time;
+  private readonly onPointerDown = (event: PointerEvent): void => {
+    this.dragging = true;
+    this.dragStartX = event.clientX;
+    this.dragStartRotation = this.rotation;
+    this.canvas.style.cursor = 'grabbing';
+    if (this.autoRotate) {
+      this.autoRotate = false;
+      this.autoRotateListener?.(false);
+    }
+  };
 
-    if (this.mode === 'hero') {
-      this.hero.update(delta);
+  private readonly onPointerMove = (event: PointerEvent): void => {
+    if (!this.dragging) {
+      return;
+    }
+    this.rotation = this.dragStartRotation + (event.clientX - this.dragStartX) * 0.01;
+  };
+
+  private readonly onPointerUp = (): void => {
+    this.dragging = false;
+    this.canvas.style.cursor = 'grab';
+  };
+
+  private refreshVisual(): void {
+    if (!this.atlas) {
+      return;
+    }
+    this.visual = this.atlas.getVisual(this.entityKey);
+    this.animator.setVisual(this.visual);
+    if (this.entityKey === 'player') {
+      this.animator.play(POSE_TO_CLIP[this.heroPose]);
     } else {
-      this.enemy.update(delta);
+      this.animator.play('move');
     }
-
-    if (this.autoRotate && !this.isDragging) {
-      this.cameraAzimuth += delta * 0.35;
-      this.cameraDirty = true;
-    }
-
-    if (this.cameraDirty) {
-      this.updateCamera();
-    }
-
-    this.renderer.render(this.scene, this.camera);
-    this.rafId = window.requestAnimationFrame(this.tick);
-  };
-
-  private resize(): void {
-    const { clientWidth, clientHeight } = this.container;
-    if (clientWidth === 0 || clientHeight === 0) {
-      return;
-    }
-    this.renderer.setSize(clientWidth, clientHeight, false);
-    this.camera.aspect = clientWidth / clientHeight;
-    this.camera.updateProjectionMatrix();
+    this.refreshCosmetic();
   }
 
-  private handleWindowResize = (): void => {
-    this.resize();
-  };
-
-  private handlePointerDown = (event: PointerEvent): void => {
-    if (event.button !== 0) {
+  private refreshCosmetic(): void {
+    if (!this.atlas) {
       return;
     }
-    event.preventDefault();
-    this.isDragging = true;
-    this.activePointerId = event.pointerId;
-    this.dragStart.set(event.clientX, event.clientY);
-    this.startAzimuth = this.cameraAzimuth;
-    this.startPolar = this.cameraPolar;
-    this.renderer.domElement.classList.add('is-dragging');
-    this.renderer.domElement.setPointerCapture(event.pointerId);
-    this.setAutoRotate(false);
-  };
-
-  private handlePointerMove = (event: PointerEvent): void => {
-    if (!this.isDragging || this.activePointerId !== event.pointerId) {
-      return;
-    }
-    event.preventDefault();
-    const deltaX = event.clientX - this.dragStart.x;
-    const deltaY = event.clientY - this.dragStart.y;
-    this.cameraAzimuth = this.startAzimuth - deltaX * 0.005;
-    this.cameraPolar = MathUtils.clamp(this.startPolar - deltaY * 0.004, this.minPolar, this.maxPolar);
-    this.cameraDirty = true;
-  };
-
-  private handlePointerUpOrCancel = (event: PointerEvent): void => {
-    if (!this.isDragging || this.activePointerId !== event.pointerId) {
-      return;
-    }
-    this.isDragging = false;
-    this.activePointerId = null;
-    this.renderer.domElement.classList.remove('is-dragging');
-    this.renderer.domElement.releasePointerCapture(event.pointerId);
-  };
-
-  private handleWheel = (event: WheelEvent): void => {
-    event.preventDefault();
-    const zoomDelta = event.deltaY * 0.04;
-    this.cameraRadius = MathUtils.clamp(this.cameraRadius + zoomDelta, this.minRadius, this.maxRadius);
-    this.cameraDirty = true;
-  };
-
-  private updateCamera(): void {
-    const sinPolar = Math.sin(this.cameraPolar);
-    const x = this.cameraTarget.x + this.cameraRadius * sinPolar * Math.sin(this.cameraAzimuth);
-    const y = this.cameraTarget.y + this.cameraRadius * Math.cos(this.cameraPolar);
-    const z = this.cameraTarget.z + this.cameraRadius * sinPolar * Math.cos(this.cameraAzimuth);
-    this.camera.position.set(x, y, z);
-    this.camera.lookAt(this.cameraTarget);
-    this.cameraDirty = false;
+    const wantCosmetic = this.entityKey === 'player' && this.heroCosmetic;
+    this.cosmeticVisual = wantCosmetic ? this.atlas.getVisual(`cosmetic:${this.heroCosmetic}`) : null;
+    this.cosmeticAnimator.setVisual(this.cosmeticVisual);
   }
 
-  private updateFocusHeight(): void {
-    const focusHeight = this.mode === 'hero' ? this.hero.getFocusHeight() : this.enemy.getFocusHeight();
-    this.cameraTarget.y = focusHeight;
-    this.cameraDirty = true;
+  private resize(stage: HTMLElement): void {
+    const dpr = Math.min(window.devicePixelRatio ?? 1, 2);
+    this.canvas.width = Math.max(1, Math.round(stage.clientWidth * dpr));
+    this.canvas.height = Math.max(1, Math.round(stage.clientHeight * dpr));
+  }
+
+  private tick(timestamp: number): void {
+    if (this.disposed) {
+      return;
+    }
+    if (this.lastFrame === 0) {
+      this.lastFrame = timestamp;
+    }
+    const deltaSeconds = Math.min(0.1, (timestamp - this.lastFrame) / 1000);
+    this.lastFrame = timestamp;
+    this.time += deltaSeconds;
+    if (this.autoRotate && !this.dragging) {
+      this.rotation += deltaSeconds * 0.6;
+    }
+    this.animator.update(deltaSeconds);
+    this.cosmeticAnimator.update(deltaSeconds);
+    this.draw();
+    this.requestId = window.requestAnimationFrame((time) => this.tick(time));
+  }
+
+  private draw(): void {
+    const { width, height } = this.canvas;
+    const ctx = this.ctx;
+    ctx.clearRect(0, 0, width, height);
+    if (!this.atlas || !this.visual) {
+      return;
+    }
+
+    const cx = width / 2;
+    const cy = height * 0.38;
+    const size = Math.min(width, height) * 0.5;
+
+    // Stage glow.
+    const glow = ctx.createRadialGradient(cx, cy + size * 0.3, size * 0.04, cx, cy + size * 0.3, size * 0.5);
+    glow.addColorStop(0, 'rgba(96, 165, 250, 0.28)');
+    glow.addColorStop(1, 'rgba(96, 165, 250, 0)');
+    ctx.fillStyle = glow;
+    ctx.fillRect(0, 0, width, height);
+
+    // Upgrade pulse rings.
+    if (this.entityKey === 'player' && this.heroUpgrade) {
+      const color = UPGRADE_COLORS[this.heroUpgrade] ?? '#38bdf8';
+      for (let i = 0; i < 2; i += 1) {
+        const progress = (this.time * 0.7 + i * 0.5) % 1;
+        ctx.strokeStyle = color;
+        ctx.globalAlpha = (1 - progress) * 0.6;
+        ctx.lineWidth = Math.max(2, size * 0.02);
+        ctx.beginPath();
+        ctx.ellipse(cx, cy + size * 0.28, size * (0.2 + progress * 0.35), size * (0.06 + progress * 0.1), 0, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+      ctx.globalAlpha = 1;
+    }
+
+    const tint = this.entityKey === 'player' && this.visual.tintable ? this.heroTint : null;
+    const frame = this.animator.getFrame();
+    if (frame) {
+      this.drawFrame(frame.rect, cx, cy, size, this.rotation, tint);
+    }
+    if (this.cosmeticVisual) {
+      const cosmeticFrame = this.cosmeticAnimator.getFrame();
+      if (cosmeticFrame) {
+        this.drawFrame(cosmeticFrame.rect, cx, cy, size, this.rotation, null);
+      }
+    }
+
+    this.drawFilmstrips();
+  }
+
+  /** Every clip of the selected entity as a labelled row of frames. */
+  private drawFilmstrips(): void {
+    if (!this.atlas || !this.visual) {
+      return;
+    }
+    const ctx = this.ctx;
+    const { width, height } = this.canvas;
+    const clipNames = Object.keys(this.visual.clips);
+    const cell = Math.min(64, Math.floor(width / 12));
+    let y = height * 0.68;
+
+    ctx.textBaseline = 'middle';
+    ctx.font = `${Math.max(9, Math.floor(cell * 0.2))}px "Press Start 2P", monospace`;
+    for (const clipName of clipNames) {
+      if (y + cell > height) {
+        break;
+      }
+      const clip = this.visual.clips[clipName];
+      ctx.fillStyle = '#dbeafe';
+      ctx.fillText(`${clipName} @ ${clip.fps}fps`, cell * 0.4, y + cell / 2);
+      const stripX = cell * 4;
+      const activeFrame = this.animator.getClipName() === clipName ? this.animator.getFrame() : null;
+      clip.frames.forEach((frame, index) => {
+        const x = stripX + index * (cell + 4);
+        if (x + cell > width) {
+          return;
+        }
+        ctx.strokeStyle = frame === activeFrame ? '#facc15' : 'rgba(219, 234, 254, 0.25)';
+        ctx.lineWidth = 1.5;
+        ctx.strokeRect(x, y, cell, cell);
+        ctx.imageSmoothingEnabled = false;
+        ctx.drawImage(this.atlas!.source, frame.rect.x, frame.rect.y, frame.rect.w, frame.rect.h, x, y, cell, cell);
+      });
+      y += cell + 10;
+    }
+  }
+
+  private drawFrame(
+    rect: { x: number; y: number; w: number; h: number },
+    cx: number,
+    cy: number,
+    size: number,
+    rotation: number,
+    tint: number | null
+  ): void {
+    if (!this.atlas) {
+      return;
+    }
+    const ctx = this.ctx;
+    let source: CanvasImageSource = this.atlas.source;
+    let sx = rect.x;
+    let sy = rect.y;
+    if (tint !== null) {
+      this.applyTint(rect, tint);
+      source = this.tintCanvas;
+      sx = 0;
+      sy = 0;
+    }
+    ctx.save();
+    ctx.imageSmoothingEnabled = false;
+    ctx.translate(cx, cy);
+    ctx.rotate(rotation);
+    ctx.drawImage(source, sx, sy, rect.w, rect.h, -size / 2, -size / 2, size, size);
+    ctx.restore();
+  }
+
+  private applyTint(rect: { x: number; y: number; w: number; h: number }, tint: number): void {
+    const tintCtx = this.tintCanvas.getContext('2d');
+    if (!tintCtx || !this.atlas) {
+      return;
+    }
+    if (this.tintCanvas.width !== rect.w || this.tintCanvas.height !== rect.h) {
+      this.tintCanvas.width = rect.w;
+      this.tintCanvas.height = rect.h;
+    }
+    tintCtx.clearRect(0, 0, rect.w, rect.h);
+    tintCtx.imageSmoothingEnabled = false;
+    tintCtx.drawImage(this.atlas.source, rect.x, rect.y, rect.w, rect.h, 0, 0, rect.w, rect.h);
+    tintCtx.globalCompositeOperation = 'multiply';
+    tintCtx.fillStyle = `#${tint.toString(16).padStart(6, '0')}`;
+    tintCtx.fillRect(0, 0, rect.w, rect.h);
+    tintCtx.globalCompositeOperation = 'destination-in';
+    tintCtx.drawImage(this.atlas.source, rect.x, rect.y, rect.w, rect.h, 0, 0, rect.w, rect.h);
+    tintCtx.globalCompositeOperation = 'source-over';
   }
 }

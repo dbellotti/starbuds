@@ -12,6 +12,12 @@
 - Networking: hello/welcome handshake with protocol guard, input → server → snapshot flow, ping keep-alive, client-side reconciliation hooks and latency callbacks.
 - Dynamic HUD frameworks: roster/ready panel, objective tracker, ping wheel, and augment toasts all driven from shared snapshot data.
 
+**Sprite Renderer & Skinning Pass (latest)**
+- All characters, enemies, projectiles, impacts, telegraphs, and reticles now render as **data-driven sprites** from one shared atlas (`packages/client/src/game/sprites/`); the procedural 3D rigs (`armoryAssets`, `enemyAssets`, `armoryEffects`) and the duplicate flat-plane textures are gone.
+- Perf: entity rendering collapsed into three instanced batches (ground FX / actors / top FX) — one draw call each regardless of entity count — and enemy spawns no longer allocate or dispose geometry/materials (previously ~10 objects per spawn).
+- Skinnable: entity visuals resolve by key (`player`, `enemy:<kind>`, `projectile:<faction>`, `cosmetic:<id>`, `fx:*`) from a JSON manifest; custom packs load via `?skin=<url>` or `VITE_SKIN_URL` as partial overrides (see `docs/skinning.md`, example at `packages/client/public/skins/example-remix.json`).
+- Armory preview + styleguide rewritten on the same atlas via plain 2D canvas (no second WebGL context); styleguide now shows per-clip filmstrips for authoring.
+
 **Recent Feature Pass (committed)**
 - Meta progression: Armory hub runs between sorties; feathers persist, upgrades/cosmetics apply server-side, and readiness is phase-aware (`context: 'armory' | 'extraction'`). Daily/weekly mutators rotate deterministically (glass cannon, overgrowth, aerial superiority, psionic storm, etc.).
 - Gameplay: Loadout upgrades influence damage/cooldowns/splits/magnet radius from the armory, while mutators tweak spawn cadence and hawk speed. Extraction unlocks at wave ≥3 and requires a ready check before countdown.
