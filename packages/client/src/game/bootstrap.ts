@@ -56,6 +56,7 @@ import { createDebugOverlay } from './debugOverlay';
 import { createHud } from './hud';
 import { InputController } from './input';
 import { GameNetwork } from './network';
+import { cycleQualityTier, getQuality, onQualityChange } from './renderQuality';
 import { SpriteAnimator, SpriteBatch, loadSkin, type ResolvedVisual, type SpriteAtlas } from './sprites';
 import { getServerUrl } from '../config';
 
@@ -85,7 +86,7 @@ export async function bootstrapGame(): Promise<void> {
   const mountNode = ensureMountNode();
   const renderer = new WebGLRenderer({ antialias: false, alpha: true });
   renderer.setClearColor(new Color(0x0a1019));
-  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, getQuality().maxPixelRatio));
   mountNode.appendChild(renderer.domElement);
 
   const scene = new Scene();
@@ -114,6 +115,13 @@ export async function bootstrapGame(): Promise<void> {
   });
   const debug = createDebugOverlay(mountNode);
   debug.updateCameraMode('Top');
+  debug.updateQuality(getQuality().tier);
+  const detachQuality = onQualityChange((settings) => {
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, settings.maxPixelRatio));
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    worldRenderer.refreshQuality();
+    debug.updateQuality(settings.tier);
+  });
 
   const ambientLight = new AmbientLight(0x1b2536, 0.58);
   const keyLight = new DirectionalLight(0xfef9c3, 0.78);
@@ -180,6 +188,9 @@ export async function bootstrapGame(): Promise<void> {
     if (event.code === 'KeyV' && !event.repeat) {
       cameraMode = cameraMode === 'top' ? 'tilt' : 'top';
       debug.updateCameraMode(cameraMode === 'top' ? 'Top' : 'Tilt');
+    }
+    if (event.code === 'KeyG' && !event.repeat) {
+      cycleQualityTier();
     }
   });
 
@@ -392,6 +403,7 @@ export async function bootstrapGame(): Promise<void> {
     console.info(`Level seed ${welcome.level.seed}`);
   } catch (error) {
     console.error('Failed to connect to game server', error);
+    detachQuality();
     detachPing();
     detachLevelUp?.();
     detachAugment?.();
@@ -459,6 +471,7 @@ export async function bootstrapGame(): Promise<void> {
     inputController.dispose();
     network.dispose();
     hud.dispose();
+    detachQuality();
     detachPing();
     detachArmory();
     detachLevelUp?.();
@@ -751,6 +764,7 @@ class WorldRenderer {
   private readonly enemyPool: EnemyAvatar[] = [];
   private readonly projectilePool: ProjectileAvatar[] = [];
   private readonly playerCosmetics = new Map<string, string | null>();
+  private lastLevel: LevelData | null = null;
   private localPlayerId: string | null = null;
   private readonly extractionBeacon = new ExtractionBeacon(this.sceneGroup);
 
@@ -776,10 +790,18 @@ class WorldRenderer {
   }
 
   applyLevel(level: LevelData): void {
+    this.lastLevel = level;
     this.decor.applyLevel(level);
     this.levelRenderer.applyLevel(level);
     this.clearTransients();
     this.impactSystem.clear();
+  }
+
+  /** Rebuild quality-dependent decor (particle/prop density) for the current level. */
+  refreshQuality(): void {
+    if (this.lastLevel) {
+      this.decor.applyLevel(this.lastLevel);
+    }
   }
 
   setLocalPlayerId(id: string): void {
@@ -1106,7 +1128,7 @@ class DecorRenderer {
 
     this.createParallaxSky(worldWidth, worldHeight, level.biome);
 
-    const particleCount = 180;
+    const particleCount = Math.max(24, Math.round(180 * getQuality().particleDensity));
     const positions = new Float32Array(particleCount * 3);
     for (let i = 0; i < particleCount; i += 1) {
       positions[i * 3] = (Math.random() - 0.5) * (worldWidth + 320);
@@ -1329,7 +1351,9 @@ class DecorRenderer {
     }
 
     const rng = mulberry32(level.seed ^ 0x51a53c2f);
-    const count = Math.min(80, Math.max(18, Math.floor(worldPositions.length * 0.06)));
+    const count = Math.round(
+      Math.min(80, Math.max(18, Math.floor(worldPositions.length * 0.06))) * getQuality().particleDensity
+    );
     const group = new Group();
     const geometry = new ConeGeometry(1.6, 6.2, 6, 1);
     geometry.translate(0, 3.1, 0);
@@ -1372,7 +1396,10 @@ class DecorRenderer {
     }
 
     const rng = mulberry32(level.seed ^ 0x4c957f2d);
-    const count = Math.min(140, Math.max(20, Math.floor(positions.length * 0.12)));
+    const count = Math.max(
+      12,
+      Math.round(Math.min(140, Math.max(20, Math.floor(positions.length * 0.12))) * getQuality().particleDensity)
+    );
 
     const { geometry, material } = createBiomePropAssets(level.biome);
     const mesh = new InstancedMesh(geometry, material, count);
@@ -2030,6 +2057,10 @@ class ImpactSystem {
   }
 
   spawn(x: number, y: number, color: number): void {
+    // Stay inside the quality tier's burst budget by recycling the oldest.
+    while (this.active.length >= getQuality().maxImpacts) {
+      this.recycle(0);
+    }
     const impact = this.pool.pop() ?? { x: 0, y: 0, tint: 0xffffff, remaining: 0, initial: 0 };
     impact.x = x;
     impact.y = y;
@@ -2098,6 +2129,9 @@ class PsychicPulseSystem {
   }
 
   spawn(x: number, y: number, color: number): void {
+    while (this.active.length >= getQuality().maxPulses) {
+      this.recycle(0);
+    }
     const pulse = this.pool.pop() ?? { x: 0, y: 0, tint: 0xffffff, remaining: 0, duration: 0, baseScale: 52 };
     pulse.x = x;
     pulse.y = y;

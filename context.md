@@ -17,6 +17,7 @@
 - Perf: entity rendering collapsed into three instanced batches (ground FX / actors / top FX) — one draw call each regardless of entity count — and enemy spawns no longer allocate or dispose geometry/materials (previously ~10 objects per spawn).
 - Skinnable: entity visuals resolve by key (`player`, `enemy:<kind>`, `projectile:<faction>`, `cosmetic:<id>`, `fx:*`) from a JSON manifest; custom packs load via `?skin=<url>` or `VITE_SKIN_URL` as partial overrides (see `docs/skinning.md`, example at `packages/client/public/skins/example-remix.json`).
 - Armory preview + styleguide rewritten on the same atlas via plain 2D canvas (no second WebGL context); styleguide now shows per-clip filmstrips for authoring.
+- Follow-ups landed: equipped cosmetics render on in-game avatars; XP orbs + psychic pulses moved into the shared FX batch; debug overlay shows draw calls; skins may ship 4-way directional clips (`move:n` etc., rotation fallback); `renderQuality.ts` adds low/medium/high tiers (pixel-ratio clamp, decor density, FX budgets) persisted in localStorage, cycled with `G`, forced via `?quality=`.
 
 **Recent Feature Pass (committed)**
 - Meta progression: Armory hub runs between sorties; feathers persist, upgrades/cosmetics apply server-side, and readiness is phase-aware (`context: 'armory' | 'extraction'`). Daily/weekly mutators rotate deterministically (glass cannon, overgrowth, aerial superiority, psionic storm, etc.).
