@@ -248,6 +248,7 @@ export async function bootstrapGame(): Promise<void> {
   const detachArmory = network.onArmoryState((state) => {
     currentPhase = state.phase;
     hud.updateArmory(state, network.getPlayerId());
+    worldRenderer.setPlayerCosmetics(state.players);
     inputController.setEnabled(currentPhase === 'combat');
     audio.setPhase(currentPhase);
     if (currentPhase !== 'combat') {
@@ -388,6 +389,7 @@ export async function bootstrapGame(): Promise<void> {
     snapshotRateSmooth = welcome.tickRate;
     currentPhase = welcome.armory.phase;
     hud.updateArmory(welcome.armory, welcome.playerId);
+    worldRenderer.setPlayerCosmetics(welcome.armory.players);
     inputController.setEnabled(currentPhase === 'combat');
     audio.setPhase(currentPhase);
     console.info(`Connected to server as ${welcome.playerId}`);
@@ -753,6 +755,7 @@ class WorldRenderer {
   private readonly decor = new DecorRenderer();
   private readonly enemyPool: EnemyAvatar[] = [];
   private readonly projectilePool: ProjectileAvatar[] = [];
+  private readonly playerCosmetics = new Map<string, string | null>();
   private localPlayerId: string | null = null;
   private readonly extractionBeacon = new ExtractionBeacon(this.sceneGroup);
 
@@ -792,6 +795,17 @@ class WorldRenderer {
     }
   }
 
+  /** Mirror armory loadouts so equipped cosmetics render on in-game avatars. */
+  setPlayerCosmetics(players: Array<{ playerId: string; equippedCosmeticId: string | null }>): void {
+    this.playerCosmetics.clear();
+    for (const player of players) {
+      this.playerCosmetics.set(player.playerId, player.equippedCosmeticId);
+    }
+    for (const [id, avatar] of this.players.entries()) {
+      avatar.setCosmetic(this.playerCosmetics.get(id) ?? null);
+    }
+  }
+
   applySnapshot(snapshot: WorldSnapshot): void {
     const seenPlayers = new Set<string>();
     const seenEnemies = new Set<string>();
@@ -807,6 +821,7 @@ class WorldRenderer {
       let avatar = this.players.get(player.id);
       if (!avatar) {
         avatar = new PlayerAvatar(player.id, player.id === this.localPlayerId, this.atlas);
+        avatar.setCosmetic(this.playerCosmetics.get(player.id) ?? null);
         this.players.set(player.id, avatar);
       }
       avatar.setState(player);
@@ -1510,9 +1525,13 @@ function disposeMaterial(material: { dispose: () => void; map?: { dispose: () =>
 
 class PlayerAvatar {
   readonly id: string;
+  private readonly atlas: SpriteAtlas;
   private readonly visual: ResolvedVisual | null;
   private readonly fxVisual: ResolvedVisual | null;
   private readonly animator = new SpriteAnimator();
+  private readonly cosmeticAnimator = new SpriteAnimator();
+  private cosmeticVisual: ResolvedVisual | null = null;
+  private cosmeticId: string | null = null;
   private readonly currentPosition = new Vector2();
   private readonly targetPosition = new Vector2();
   private readonly baseColor = new Color();
@@ -1534,11 +1553,21 @@ class PlayerAvatar {
 
   constructor(id: string, isLocal: boolean, atlas: SpriteAtlas) {
     this.id = id;
+    this.atlas = atlas;
     this.isLocal = isLocal;
     this.visual = atlas.getVisual('player');
     this.fxVisual = atlas.getVisual('fx:reticle');
     this.animator.setVisual(this.visual);
     this.baseColor.setHex(pickColor(id, isLocal));
+  }
+
+  setCosmetic(id: string | null): void {
+    if (this.cosmeticId === id) {
+      return;
+    }
+    this.cosmeticId = id;
+    this.cosmeticVisual = id ? this.atlas.getVisual(`cosmetic:${id}`) : null;
+    this.cosmeticAnimator.setVisual(this.cosmeticVisual);
   }
 
   setState(state: PlayerState): void {
@@ -1609,6 +1638,24 @@ class PlayerAvatar {
         this.tempColor.getHex(),
         opacity
       );
+    }
+
+    if (this.cosmeticVisual) {
+      this.cosmeticAnimator.update(deltaSeconds);
+      const cosmeticFrame = this.cosmeticAnimator.getFrame();
+      if (cosmeticFrame) {
+        batches.actors.submit(
+          this.currentPosition.x,
+          PLAYER_HEIGHT + 0.3,
+          this.currentPosition.y,
+          rotation,
+          this.cosmeticVisual.worldSize.width,
+          this.cosmeticVisual.worldSize.height,
+          cosmeticFrame,
+          0xffffff,
+          opacity
+        );
+      }
     }
 
     if (this.targeted) {
