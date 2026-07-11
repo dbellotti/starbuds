@@ -1589,13 +1589,8 @@ class PlayerAvatar {
     this.invulnerableTimer = Math.max(0, this.invulnerableTimer - deltaSeconds);
     this.attackTimer = Math.max(0, this.attackTimer - deltaSeconds);
 
-    if (this.attackTimer > 0) {
-      this.animator.play('attack');
-    } else if (this.movementSpeed > 12) {
-      this.animator.play('move');
-    } else {
-      this.animator.play('idle');
-    }
+    const clipName = this.attackTimer > 0 ? 'attack' : this.movementSpeed > 12 ? 'move' : 'idle';
+    const directional = this.animator.playFacing(clipName, this.currentFacing);
     this.animator.update(deltaSeconds);
 
     const hurtRatio = PLAYER_HURT_FLASH_TIME > 0 ? Math.min(1, this.hurtTimer / PLAYER_HURT_FLASH_TIME) : 0;
@@ -1611,7 +1606,7 @@ class PlayerAvatar {
       opacity = Math.min(1, 0.75 + flicker * 0.5);
     }
 
-    const rotation = -this.currentFacing + Math.PI / 2;
+    const rotation = directional ? 0 : -this.currentFacing + Math.PI / 2;
     const frame = this.animator.getFrame();
     if (this.visual && frame) {
       batches.actors.submit(
@@ -1767,13 +1762,9 @@ class EnemyAvatar {
     this.currentPosition.lerp(this.targetPosition, lerpFactor);
     this.currentFacing = MathUtils.lerp(this.currentFacing, this.targetFacing, lerpFactor);
 
-    if (this.intent === 'windup' || this.intent === 'channel') {
-      this.animator.play('windup');
-    } else if (this.movementSpeed > 6) {
-      this.animator.play('move');
-    } else {
-      this.animator.play('idle');
-    }
+    const clipName =
+      this.intent === 'windup' || this.intent === 'channel' ? 'windup' : this.movementSpeed > 6 ? 'move' : 'idle';
+    const directional = this.animator.playFacing(clipName, this.currentFacing);
     this.animator.update(deltaSeconds);
 
     let scale = 1 + Math.sin((this.time + this.currentPosition.length() * 0.003) * 3.2) * 0.04;
@@ -1794,7 +1785,7 @@ class EnemyAvatar {
         this.currentPosition.x,
         PLAYER_HEIGHT * 0.8,
         this.currentPosition.y,
-        -this.currentFacing + Math.PI / 2,
+        directional ? 0 : -this.currentFacing + Math.PI / 2,
         this.visual.worldSize.width * scale,
         this.visual.worldSize.height * scale,
         frame,
