@@ -28,10 +28,8 @@ import {
   Points,
   PointsMaterial,
   Scene,
-  ShaderMaterial,
   Quaternion,
   SphereGeometry,
-  Uniform,
   Vector2,
   Vector3,
   WebGLRenderer
@@ -82,7 +80,6 @@ const PING_COLORS: Record<QuickPingKind, number> = {
   loot: 0x22c55e,
   objective: 0xfacc15
 };
-const XP_ORB_TIME = new Uniform(0);
 
 export async function bootstrapGame(): Promise<void> {
   const mountNode = ensureMountNode();
@@ -90,7 +87,6 @@ export async function bootstrapGame(): Promise<void> {
   renderer.setClearColor(new Color(0x0a1019));
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
   mountNode.appendChild(renderer.domElement);
-  XP_ORB_TIME.value = performance.now() * 0.001;
 
   const scene = new Scene();
   const camera = createCamera(new Vector2(window.innerWidth, window.innerHeight));
@@ -447,10 +443,10 @@ export async function bootstrapGame(): Promise<void> {
     if (deltaSeconds > 0) {
       const fpsInstant = 1 / deltaSeconds;
       fpsSmooth = MathUtils.lerp(fpsSmooth, fpsInstant, 0.1);
-      debug.updateRenderStats(fpsSmooth);
     }
 
     renderer.render(scene, camera);
+    debug.updateRenderStats(fpsSmooth, renderer.info.render.calls);
     requestAnimationFrame(renderLoop);
   };
   requestAnimationFrame(renderLoop);
@@ -746,12 +742,11 @@ class WorldRenderer {
   private readonly artifacts = new Map<string, ArtifactShard>();
   private readonly levelRenderer = new LevelRenderer();
   private readonly projectileGroup = new Group();
-  private readonly xpGroup = new Group();
   private readonly artifactGroup = new Group();
   private readonly atlas: SpriteAtlas;
   private readonly batches: SpriteBatchSet;
   private readonly impactSystem: ImpactSystem;
-  private readonly pulseSystem = new PsychicPulseSystem();
+  private readonly pulseSystem: PsychicPulseSystem;
   private readonly decor = new DecorRenderer();
   private readonly enemyPool: EnemyAvatar[] = [];
   private readonly projectilePool: ProjectileAvatar[] = [];
@@ -769,16 +764,15 @@ class WorldRenderer {
       fx: new SpriteBatch(atlas.texture, { additive: true, renderOrder: 5, capacity: 512 })
     };
     this.impactSystem = new ImpactSystem(atlas);
+    this.pulseSystem = new PsychicPulseSystem(atlas);
     scene.add(this.decor.group);
     scene.add(this.sceneGroup);
     this.sceneGroup.add(this.levelRenderer.group);
     this.sceneGroup.add(this.projectileGroup);
-    this.sceneGroup.add(this.xpGroup);
     this.sceneGroup.add(this.artifactGroup);
     this.sceneGroup.add(this.batches.ground.mesh);
     this.sceneGroup.add(this.batches.actors.mesh);
     this.sceneGroup.add(this.batches.fx.mesh);
-    this.sceneGroup.add(this.pulseSystem.group);
   }
 
   applyLevel(level: LevelData): void {
@@ -886,7 +880,7 @@ class WorldRenderer {
     for (const drop of snapshot.xpDrops) {
       let orb = this.xpDrops.get(drop.id);
       if (!orb) {
-        orb = new XpOrb(drop.id, this.xpGroup);
+        orb = new XpOrb(drop.id, this.atlas);
         this.xpDrops.set(drop.id, orb);
       }
       orb.setState(drop.position.x, drop.position.y, drop.amount, drop.age);
@@ -933,10 +927,8 @@ class WorldRenderer {
       }
     }
 
-    for (const [id, orb] of this.xpDrops.entries()) {
+    for (const id of this.xpDrops.keys()) {
       if (!seenXp.has(id)) {
-        this.xpGroup.remove(orb.mesh);
-        orb.dispose();
         this.xpDrops.delete(id);
       }
     }
@@ -955,7 +947,6 @@ class WorldRenderer {
   }
 
   update(deltaSeconds: number): void {
-    XP_ORB_TIME.value = performance.now() * 0.001;
     const focus = this.getLocalPlayerPosition();
     this.decor.update(deltaSeconds, focus);
     this.batches.ground.begin();
@@ -971,13 +962,13 @@ class WorldRenderer {
       avatar.update(deltaSeconds, this.batches);
     }
     for (const orb of this.xpDrops.values()) {
-      orb.update(deltaSeconds);
+      orb.update(deltaSeconds, this.batches);
     }
     for (const shard of this.artifacts.values()) {
       shard.update(deltaSeconds);
     }
     this.impactSystem.update(deltaSeconds, this.batches.fx);
-    this.pulseSystem.update(deltaSeconds);
+    this.pulseSystem.update(deltaSeconds, this.batches.fx);
     this.extractionBeacon.update(deltaSeconds);
     this.batches.ground.end();
     this.batches.actors.end();
@@ -1042,10 +1033,6 @@ class WorldRenderer {
     }
     this.enemies.clear();
 
-    for (const orb of this.xpDrops.values()) {
-      this.xpGroup.remove(orb.mesh);
-      orb.dispose();
-    }
     this.xpDrops.clear();
     for (const shard of this.artifacts.values()) {
       shard.dispose();
@@ -2101,50 +2088,51 @@ class ImpactSystem {
   }
 }
 
-/* eslint-disable @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access */
+type PulseState = {
+  x: number;
+  y: number;
+  tint: number;
+  remaining: number;
+  duration: number;
+  baseScale: number;
+};
 
 class PsychicPulseSystem {
-  readonly group = new Group();
-  private readonly pool: Mesh<PlaneGeometry, ShaderMaterial>[] = [];
-  private readonly active: Mesh<PlaneGeometry, ShaderMaterial>[] = [];
-  private readonly geometry: PlaneGeometry;
+  private readonly visual: ResolvedVisual | null;
+  private readonly active: PulseState[] = [];
+  private readonly pool: PulseState[] = [];
 
-  constructor() {
-    this.geometry = new PlaneGeometry(1, 1);
-    this.geometry.rotateX(-Math.PI / 2);
+  constructor(atlas: SpriteAtlas) {
+    this.visual = atlas.getVisual('fx:pulse');
   }
 
   spawn(x: number, y: number, color: number): void {
-    const mesh = this.pool.pop() ?? this.createMesh();
-    const material = mesh.material;
-    material.uniforms.uColor.value.setHex(color);
-    material.uniforms.uProgress.value = 0;
-    mesh.position.set(x, 2, y);
-    mesh.scale.setScalar(52);
-    mesh.userData.remaining = 0.9;
-    mesh.userData.duration = 0.9;
-    mesh.userData.baseScale = 52;
-    this.group.add(mesh);
-    this.active.push(mesh);
+    const pulse = this.pool.pop() ?? { x: 0, y: 0, tint: 0xffffff, remaining: 0, duration: 0, baseScale: 52 };
+    pulse.x = x;
+    pulse.y = y;
+    pulse.tint = color;
+    pulse.remaining = 0.9;
+    pulse.duration = 0.9;
+    pulse.baseScale = 52;
+    this.active.push(pulse);
   }
 
-  update(deltaSeconds: number): void {
+  update(deltaSeconds: number, batch: SpriteBatch): void {
+    const frames = this.visual?.clips.idle.frames;
     for (let i = this.active.length - 1; i >= 0; i -= 1) {
-      const mesh = this.active[i];
-      mesh.userData.remaining -= deltaSeconds;
-      const remaining: number = mesh.userData.remaining;
-      const duration: number = mesh.userData.duration;
-      if (remaining <= 0) {
+      const pulse = this.active[i];
+      pulse.remaining -= deltaSeconds;
+      if (pulse.remaining <= 0) {
         this.recycle(i);
         continue;
       }
-      const progress = 1 - remaining / duration;
-      const material = mesh.material;
-      material.uniforms.uProgress.value = progress;
-      material.needsUpdate = true;
-      const growth = 1 + progress * 1.8;
-      mesh.scale.setScalar(mesh.userData.baseScale * growth);
-      mesh.position.y = 2 + progress * 6;
+      if (!frames || frames.length === 0) {
+        continue;
+      }
+      const progress = 1 - pulse.remaining / pulse.duration;
+      const frame = frames[Math.min(frames.length - 1, Math.floor(progress * frames.length))];
+      const scale = pulse.baseScale * (1 + progress * 1.8);
+      batch.submit(pulse.x, 2 + progress * 6, pulse.y, 0, scale, scale, frame, pulse.tint, (1 - progress) * 0.85);
     }
   }
 
@@ -2154,59 +2142,11 @@ class PsychicPulseSystem {
     }
   }
 
-  private createMesh(): Mesh<PlaneGeometry, ShaderMaterial> {
-    const material = new ShaderMaterial({
-      uniforms: {
-        uProgress: { value: 0 },
-        uColor: { value: new Color(0x60a5fa) }
-      },
-      transparent: true,
-      blending: AdditiveBlending,
-      depthWrite: false,
-      toneMapped: false,
-      vertexShader: `
-        varying vec2 vUv;
-        void main() {
-          vUv = uv;
-          gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
-        }
-      `,
-      fragmentShader: `
-        uniform float uProgress;
-        uniform vec3 uColor;
-        varying vec2 vUv;
-
-        void main() {
-          vec2 centered = vUv - 0.5;
-          float dist = length(centered);
-          float falloff = smoothstep(0.48, 0.1, dist);
-          float ring = smoothstep(0.32, 0.18, dist) - smoothstep(0.12, 0.08, dist);
-          float pulse = sin((0.5 - dist) * 12.0 + uProgress * 8.0) * 0.35 + 0.75;
-          float alpha = clamp((1.0 - uProgress) * falloff * (0.6 + ring * pulse), 0.0, 1.0);
-          if (alpha <= 0.01) {
-            discard;
-          }
-          gl_FragColor = vec4(uColor, alpha);
-        }
-      `
-    });
-    const mesh = new Mesh(this.geometry, material);
-    mesh.renderOrder = 5;
-    mesh.userData.remaining = 0;
-    mesh.userData.duration = 0;
-    mesh.userData.baseScale = 52;
-    return mesh;
-  }
-
   private recycle(index: number): void {
-    const mesh = this.active[index];
-    this.group.remove(mesh);
-    this.pool.push(mesh);
+    this.pool.push(this.active[index]);
     this.active.splice(index, 1);
   }
 }
-
-/* eslint-enable @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access */
 
 class ArtifactShard {
   readonly id: string;
@@ -2334,24 +2274,22 @@ class ArtifactShard {
   }
 }
 
+const ORB_COLOR_DIM = new Color(0.99, 0.92, 0.64);
+const ORB_COLOR_BRIGHT = new Color(1.0, 0.84, 0.35);
+const ORB_TEMP_COLOR = new Color();
+
 class XpOrb {
-  readonly mesh: Mesh;
   readonly id: string;
+  private readonly visual: ResolvedVisual | null;
   private readonly currentPosition = new Vector2();
   private readonly targetPosition = new Vector2();
-  private readonly material: ShaderMaterial;
-  private baseAmount = 0;
-  private spawnTime = 0;
+  private amount = 0;
+  private age = 0;
   private initialized = false;
 
-  constructor(id: string, parent: Group) {
+  constructor(id: string, atlas: SpriteAtlas) {
     this.id = id;
-    const geometry = new PlaneGeometry(18, 18);
-    this.material = createXpOrbMaterial();
-    this.mesh = new Mesh(geometry, this.material);
-    this.mesh.renderOrder = 1;
-    this.mesh.frustumCulled = false;
-    parent.add(this.mesh);
+    this.visual = atlas.getVisual('fx:orb');
   }
 
   setState(x: number, y: number, amount: number, age: number): void {
@@ -2360,21 +2298,34 @@ class XpOrb {
       this.currentPosition.set(x, y);
       this.initialized = true;
     }
-    this.baseAmount = amount;
-    this.spawnTime = XP_ORB_TIME.value - age;
-    this.material.uniforms.uSpawnTime.value = this.spawnTime;
-    this.material.uniforms.uAmount.value = amount;
+    this.amount = amount;
+    this.age = age;
   }
 
-  update(deltaSeconds: number): void {
+  update(deltaSeconds: number, batches: SpriteBatchSet): void {
     const lerpFactor = Math.min(1, deltaSeconds * 6);
     this.currentPosition.lerp(this.targetPosition, lerpFactor);
-    this.mesh.position.set(this.currentPosition.x, 0, this.currentPosition.y);
-  }
+    this.age += deltaSeconds;
 
-  dispose(): void {
-    this.mesh.geometry.dispose();
-    disposeMaterial(this.material);
+    const frames = this.visual?.clips.idle.frames;
+    if (!this.visual || !frames || frames.length === 0) {
+      return;
+    }
+    const strength = Math.max(0, Math.min(1, this.amount / 18));
+    const pulse = 0.7 + Math.min(this.amount / 30, 1) * 0.5 + Math.sin(this.age * 6) * 0.1;
+    const bob = Math.sin(this.age * 3.4) * 4 + 5;
+    ORB_TEMP_COLOR.lerpColors(ORB_COLOR_DIM, ORB_COLOR_BRIGHT, strength);
+    batches.fx.submit(
+      this.currentPosition.x,
+      bob,
+      this.currentPosition.y,
+      0,
+      this.visual.worldSize.width * pulse,
+      this.visual.worldSize.height * pulse,
+      frames[Math.floor(this.age * 6) % frames.length],
+      ORB_TEMP_COLOR.getHex(),
+      0.75 + strength * 0.2
+    );
   }
 }
 
@@ -2597,59 +2548,6 @@ function createBiomePropAssets(biome: LevelData['biome']): {
       return { geometry, material };
     }
   }
-}
-
-function createXpOrbMaterial(): ShaderMaterial {
-  return new ShaderMaterial({
-    uniforms: {
-      uTime: XP_ORB_TIME,
-      uSpawnTime: { value: 0 },
-      uAmount: { value: 0 }
-    },
-    transparent: true,
-    blending: AdditiveBlending,
-    depthWrite: false,
-    vertexShader: `
-      uniform float uTime;
-      uniform float uSpawnTime;
-      uniform float uAmount;
-      varying float vAmount;
-      varying vec2 vUv;
-
-      void main() {
-        vUv = uv;
-        float age = max(0.0, uTime - uSpawnTime);
-        float bob = sin(age * 3.4) * 4.0 + 5.0;
-        float scaleBase = 0.7 + min(uAmount / 30.0, 1.0) * 0.5;
-        float scalePulse = scaleBase + sin(age * 6.0) * 0.1;
-
-        vec3 worldPosition = (modelMatrix * vec4(0.0, 0.0, 0.0, 1.0)).xyz;
-        vec3 right = vec3(modelViewMatrix[0][0], modelViewMatrix[1][0], modelViewMatrix[2][0]);
-        vec3 up = vec3(modelViewMatrix[0][1], modelViewMatrix[1][1], modelViewMatrix[2][1]);
-        vec3 offset = (right * (position.x) + up * (position.y)) * scalePulse;
-        vec3 billboardPos = worldPosition + offset + vec3(0.0, bob, 0.0);
-
-        vAmount = uAmount;
-        gl_Position = projectionMatrix * viewMatrix * vec4(billboardPos, 1.0);
-      }
-    `,
-    fragmentShader: `
-      varying float vAmount;
-      varying vec2 vUv;
-
-      void main() {
-        vec2 centered = vUv - 0.5;
-        float dist = length(centered);
-        float strength = clamp(vAmount / 18.0, 0.0, 1.0);
-        vec3 innerColor = mix(vec3(0.99, 0.92, 0.64), vec3(1.0, 0.84, 0.35), strength);
-        float alpha = smoothstep(0.55, 0.08, dist);
-        if (alpha <= 0.01) {
-          discard;
-        }
-        gl_FragColor = vec4(innerColor, alpha * (0.75 + strength * 0.2));
-      }
-    `
-  });
 }
 
 function createSpawnTexture(biome: LevelData['biome'], rng: () => number): CanvasTexture {

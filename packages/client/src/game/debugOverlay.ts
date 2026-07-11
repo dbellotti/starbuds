@@ -1,7 +1,8 @@
 export interface DebugOverlay {
-  updateRenderStats(fps: number): void;
+  updateRenderStats(fps: number, drawCalls?: number): void;
   updateNetworkStats(stats: { pingMs?: number; tickDriftMs?: number; snapshotsPerSecond?: number }): void;
   updateCameraMode(mode: string): void;
+  updateQuality(label: string): void;
   dispose(): void;
 }
 
@@ -16,6 +17,14 @@ export function createDebugOverlay(parent: HTMLElement): DebugOverlay {
   const renderValue = document.createElement('span');
   renderValue.textContent = '--';
   renderRow.append(renderLabel, renderValue);
+
+  const drawRow = document.createElement('div');
+  drawRow.className = 'debug-overlay-row';
+  const drawLabel = document.createElement('span');
+  drawLabel.textContent = 'Draws';
+  const drawValue = document.createElement('span');
+  drawValue.textContent = '--';
+  drawRow.append(drawLabel, drawValue);
 
   const networkRow = document.createElement('div');
   networkRow.className = 'debug-overlay-row';
@@ -41,7 +50,15 @@ export function createDebugOverlay(parent: HTMLElement): DebugOverlay {
   cameraValue.textContent = 'Top';
   cameraRow.append(cameraLabel, cameraValue);
 
-  root.append(renderRow, networkRow, tickRow, cameraRow);
+  const qualityRow = document.createElement('div');
+  qualityRow.className = 'debug-overlay-row';
+  const qualityLabel = document.createElement('span');
+  qualityLabel.textContent = 'Gfx';
+  const qualityValue = document.createElement('span');
+  qualityValue.textContent = '--';
+  qualityRow.append(qualityLabel, qualityValue);
+
+  root.append(renderRow, drawRow, networkRow, tickRow, cameraRow, qualityRow);
   parent.appendChild(root);
 
   function formatNumber(value: number, digits = 0): string {
@@ -49,8 +66,11 @@ export function createDebugOverlay(parent: HTMLElement): DebugOverlay {
   }
 
   return {
-    updateRenderStats(fps: number) {
+    updateRenderStats(fps: number, drawCalls?: number) {
       renderValue.textContent = formatNumber(fps, 0);
+      if (typeof drawCalls === 'number') {
+        drawValue.textContent = formatNumber(drawCalls, 0);
+      }
     },
     updateNetworkStats({ pingMs, tickDriftMs, snapshotsPerSecond }) {
       if (typeof pingMs === 'number') {
@@ -64,6 +84,9 @@ export function createDebugOverlay(parent: HTMLElement): DebugOverlay {
     },
     updateCameraMode(mode: string) {
       cameraValue.textContent = mode;
+    },
+    updateQuality(label: string) {
+      qualityValue.textContent = label;
     },
     dispose() {
       root.remove();
