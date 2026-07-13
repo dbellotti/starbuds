@@ -63,6 +63,8 @@ import type {
   XpDropState
 } from '@starbuds/shared';
 
+import { createStaticFileHandler } from './staticFiles.js';
+
 const TICK_INTERVAL_MS = 1000 / TICK_RATE;
 const PORT = Number(process.env.PORT ?? 7777);
 const HOST = process.env.HOST ?? '0.0.0.0';
@@ -2057,9 +2059,36 @@ const clients = new Map<WebSocket, ClientContext>();
 
 enterArmoryStage();
 
-const httpServer = createServer((_, res) => {
-  res.writeHead(200, { 'Content-Type': 'text/plain' });
-  res.end('Starbuds game server running');
+const CLIENT_DIST = process.env.CLIENT_DIST;
+const serveClientFile = CLIENT_DIST ? createStaticFileHandler(CLIENT_DIST) : null;
+
+const httpServer = createServer((req, res) => {
+  void (async () => {
+    if (req.url === '/healthz' || req.url?.startsWith('/healthz?')) {
+      res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
+      res.end('ok');
+      return;
+    }
+
+    if (serveClientFile && (await serveClientFile(req, res))) {
+      return;
+    }
+
+    if (serveClientFile) {
+      res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
+      res.end('Not found');
+      return;
+    }
+
+    res.writeHead(200, { 'Content-Type': 'text/plain' });
+    res.end('Starbuds game server running');
+  })().catch((error) => {
+    console.error('http request error', error);
+    if (!res.headersSent) {
+      res.writeHead(500, { 'Content-Type': 'text/plain; charset=utf-8' });
+    }
+    res.end();
+  });
 });
 
 const wss = new WebSocketServer({ server: httpServer });

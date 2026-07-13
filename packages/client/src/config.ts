@@ -39,8 +39,14 @@ function resolveOrigin(): string {
 
 function resolvePort(): string | null {
   const envPortValue = import.meta.env.VITE_SERVER_PORT as unknown;
-  if (typeof envPortValue === 'string' && envPortValue.trim().length > 0) {
-    return envPortValue.trim();
+  if (typeof envPortValue === 'string') {
+    const trimmed = envPortValue.trim();
+    if (trimmed.length > 0) {
+      return trimmed;
+    }
+    // An explicitly-empty VITE_SERVER_PORT means "same origin as the page":
+    // use the page's own port, which is blank on default 80/443.
+    return typeof window !== 'undefined' && window.location.port ? window.location.port : null;
   }
   return DEFAULT_PORT;
 }

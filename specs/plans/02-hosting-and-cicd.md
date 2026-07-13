@@ -60,31 +60,38 @@ Region: pick the Fly region nearest the group (e.g. `sea`/`lax`/`ord` for US,
 
 ### Repo changes
 
-- [ ] `packages/server`: static-file serving behind `CLIENT_DIST`, plus `/healthz`.
-- [ ] `packages/client/src/config.ts`: empty `VITE_SERVER_PORT` → same-origin port.
-- [ ] `Dockerfile` (multi-stage, `node:22-slim` to match devbox's Node 22):
+- [x] `packages/server`: static-file serving behind `CLIENT_DIST`
+  (`src/staticFiles.ts`), plus `/healthz`.
+- [x] `packages/client/src/config.ts`: empty `VITE_SERVER_PORT` → same-origin port.
+- [x] `Dockerfile` (multi-stage, `node:22-slim` to match devbox's Node 22):
   1. `npm ci` with the full workspace.
-  2. `npm run build` — builds `shared`, `server` (tsc → `dist/`), `client`
-     (Vite, with `VITE_SERVER_PORT=""`); bundle budgets already gate this.
-  3. Runtime stage: production deps only (`npm ci --omit=dev`), server `dist/`,
-     client `dist/` at `CLIENT_DIST`, `CMD node packages/server/dist/index.js`.
-- [ ] `fly.toml`: `internal_port = 7777`, HTTPS handlers, health check on `/healthz`,
+  2. `npm run build --workspace=@starbuds/client` with `VITE_SERVER_PORT=""`;
+     bundle budgets already gate this.
+  3. Runtime stage: production deps only (`npm ci --omit=dev`), server + shared
+     sources, client `dist/` at `CLIENT_DIST`, `CMD tsx packages/server/src/index.ts`.
+     The server runs from source via `tsx` (now a production dependency) because
+     `@starbuds/shared` only ships `.ts` sources — the `tsc` output was never
+     runnable under plain Node — and `tsx` is already how dev and the smoke test
+     run the server.
+- [x] `fly.toml`: `internal_port = 7777`, HTTPS handlers, health check on `/healthz`,
   `auto_stop_machines = "suspend"`, `auto_start_machines = true`,
   `min_machines_running = 0`, chosen primary region.
-- [ ] `.dockerignore` (node_modules, logs, specs, docs).
+- [x] `.dockerignore` (node_modules, logs, specs, docs).
+- [x] Fix `npm run smoke`: it hard-coded `protocol: 3` and broke when
+  `NETWORK_PROTOCOL_VERSION` became 4 — it now runs under `tsx` and imports the
+  constant from `@starbuds/shared`, and waits for the expected message type
+  instead of assuming it arrives first.
 
 ### GitHub Actions
 
-- [ ] `.github/workflows/ci.yml` — on every PR and push to `main`:
-  Node 22 + npm cache → `npm ci` → `npm run lint` → `npm run typecheck` →
-  `npm run build` → `npm run smoke` (already CI-friendly: spawns the server on a
-  fixed port and verifies the hello/welcome handshake).
-- [ ] `.github/workflows/deploy.yml` — on push to `main` only, gated on the CI job
-  (`needs:` in the same workflow, or `workflow_run`): checkout →
+- [x] `.github/workflows/ci.yml`, `checks` job — on every PR and push to `main`:
+  Node 22 + npm cache → `npm ci` (with `PUPPETEER_SKIP_DOWNLOAD`) → `npm run lint`
+  → `npm run typecheck` → `npm run build` → `npm run smoke`.
+- [x] `.github/workflows/ci.yml`, `deploy` job — push to `main` only, `needs: checks`:
   `superfly/flyctl-actions/setup-flyctl` → `flyctl deploy --remote-only`
   (builds the Docker image on Fly's builders, so CI stays fast).
-  `concurrency: { group: deploy-production, cancel-in-progress: true }` so rapid
-  merges don't race; `FLY_API_TOKEN` from repo secrets.
+  `concurrency: deploy-production` with `cancel-in-progress: false` so rapid
+  merges queue instead of racing; `FLY_API_TOKEN` from repo secrets.
 
 ### One-time manual setup (account owner)
 
