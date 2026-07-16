@@ -78,6 +78,29 @@ reskin only the player (or add one new enemy) with a tiny PNG.
 Missing clips fall back to `idle`; missing entities fall back to the default
 skin (with a one-time console warning), so a skin never hard-crashes the game.
 
+### Directional clips (optional)
+
+By default sprites are authored facing up and the renderer rotates the quad to
+the entity's facing. Arbitrary rotation slightly smears pixel art and rotates
+any painted shading, so skins can instead provide **4-way directional
+variants** by suffixing clip names with a compass direction:
+
+```jsonc
+"animations": {
+  "move":   { "frames": ["hero_move_up_0", ...] },      // fallback (rotated)
+  "move:n": { "frames": ["hero_move_n_0", ...] },       // north (screen up)
+  "move:e": { "frames": ["hero_move_e_0", ...] },
+  "move:s": { "frames": ["hero_move_s_0", ...] },
+  "move:w": { "frames": ["hero_move_w_0", ...] }
+}
+```
+
+When a `<clip>:<n|e|s|w>` variant exists the renderer picks it from the
+entity's facing and draws the sprite **unrotated**; directions without a
+variant fall back to the rotated base clip, so you can add directional art
+incrementally (e.g. just `move:n`/`move:s` first). Walk-cycle time is
+preserved across direction changes. The built-in skin uses rotation only.
+
 Adding a **new enemy kind or cosmetic** end-to-end: add the gameplay id in
 `packages/shared` / server as before, then give it a visual by adding an
 `enemy:<kind>` (or `cosmetic:<id>`) entry — either in `defaultSkin.ts` or in a

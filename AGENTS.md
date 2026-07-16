@@ -8,7 +8,7 @@
 - `scripts/`: Local developer helpers (e.g., combined dev runner). Extend here when adding workflow automation.
 - `packages/**/src/` hosts source; keep new assets adjacent to their consumers. Stash design docs or one-off tools under `docs/` or `tools/` if created.
 - `docs/art-style.md` collects texture + low-poly direction; skim before shipping new biome work.
-- Client camera/debug hotkeys live in `packages/client/src/game/bootstrap.ts`; remember Key `V` toggles view and the HUD tip mirrors expectations.
+- Client camera/debug hotkeys live in `packages/client/src/game/bootstrap.ts`; remember Key `V` toggles view, Key `G` cycles render quality (`renderQuality.ts`), and the HUD tip mirrors expectations.
 - Level-up UI and toast feedback are owned by `packages/client/src/game/hud.ts`; prefer calling its helpers (`presentLevelUp`, `showAugmentToast`, `showBossSpawn`) instead of manipulating DOM directly. Build and artifact indicators also live here—update the HUD helpers when adding new VFX/UI signals.
 - Armory HUD logic lives in `packages/client/src/game/hud.ts` with styling in `packages/client/src/style.css`; the milestone 5 pass centers the overlay, adds preview stages via hover/focus events, and is documented in `docs/milestone-5-ux-audit.md`.
 

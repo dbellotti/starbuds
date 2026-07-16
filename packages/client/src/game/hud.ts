@@ -194,7 +194,7 @@ export function createHud(parent: HTMLElement, options: HudOptions = {}): Hud {
 
   const tipLabel = document.createElement('div');
   tipLabel.className = 'hud-tip';
-  tipLabel.textContent = 'LMB: Psychic Bolt · WASD: Move · V: Toggle View · Q: Ping Wheel';
+  tipLabel.textContent = 'LMB: Psychic Bolt · WASD: Move · V: Toggle View · Q: Ping Wheel · G: Quality';
   panel.appendChild(tipLabel);
 
   const audio = createDamageAudio();

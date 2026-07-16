@@ -96,6 +96,16 @@ export function createDefaultSkin(): DefaultSkin {
     worldSize: { width: 18, height: 18 },
     tintable: true
   });
+  entities['fx:orb'] = builder.addEntity('fx_orb', paintOrb, {
+    clips: [{ name: 'idle', pose: 'idle', frames: 2, fps: 6 }],
+    worldSize: { width: 18, height: 18 },
+    tintable: true
+  });
+  entities['fx:pulse'] = builder.addEntity('fx_pulse', paintPulseRing, {
+    clips: [{ name: 'idle', pose: 'idle', frames: 8, fps: 9, loop: false, linearPhase: true }],
+    worldSize: { width: 1, height: 1 },
+    tintable: true
+  });
   entities['fx:telegraph'] = builder.addEntity('fx_telegraph', paintTelegraph, {
     clips: [{ name: 'idle', pose: 'idle', frames: 1, fps: 1 }],
     worldSize: { width: 1, height: 1 },
@@ -140,6 +150,12 @@ interface ClipSpec {
   pose: Pose;
   frames: number;
   fps: number;
+  loop?: boolean;
+  /**
+   * By default the painter's `phase` walks sin(t·2π) for seamless loops.
+   * Linear clips get raw progress 0→1 instead (for one-shot effects).
+   */
+  linearPhase?: boolean;
 }
 
 interface EntitySpec {
@@ -162,12 +178,16 @@ class AtlasBuilder {
         const id = `${framePrefix}_${clip.name}_${i}`;
         const rect = this.allocate();
         this.frames[id] = rect;
-        // Phase walks the sine wave once across the clip for seamless loops.
-        const t = clip.frames > 1 ? i / clip.frames : 0;
-        this.jobs.push({ rect, painter, pose: clip.pose, phase: Math.sin(t * Math.PI * 2) });
+        const phase = clip.linearPhase
+          ? clip.frames > 1
+            ? i / (clip.frames - 1)
+            : 0
+          : // Phase walks the sine wave once across the clip for seamless loops.
+            Math.sin((clip.frames > 1 ? i / clip.frames : 0) * Math.PI * 2);
+        this.jobs.push({ rect, painter, pose: clip.pose, phase });
         frameIds.push(id);
       }
-      animations[clip.name] = { frames: frameIds, fps: clip.fps };
+      animations[clip.name] = { frames: frameIds, fps: clip.fps, loop: clip.loop };
     }
     return {
       animations,
@@ -545,6 +565,35 @@ function paintImpact(ctx: CanvasRenderingContext2D, s: number): void {
     ctx.moveTo(s / 2 + Math.cos(angle) * s * 0.18, s / 2 + Math.sin(angle) * s * 0.18);
     ctx.lineTo(s / 2 + Math.cos(angle) * s * 0.42, s / 2 + Math.sin(angle) * s * 0.42);
     ctx.stroke();
+  }
+}
+
+function paintOrb(ctx: CanvasRenderingContext2D, s: number, _pose: Pose, phase: number): void {
+  radialGlow(ctx, s, 2, s * 0.4 + phase * 2.5, 1);
+  ellipse(ctx, s / 2, s / 2, s * 0.1 + phase, s * 0.1 + phase, 'rgba(255,255,255,0.95)');
+}
+
+/** One-shot expanding shockwave ring; `phase` is linear 0→1 across the clip. */
+function paintPulseRing(ctx: CanvasRenderingContext2D, s: number, _pose: Pose, phase: number): void {
+  const maxRadius = s / 2 - 3;
+  const radius = 4 + phase * (maxRadius - 4);
+  const fade = 1 - phase * 0.55;
+  ctx.strokeStyle = `rgba(255,255,255,${0.85 * fade})`;
+  ctx.lineWidth = Math.max(1.5, 5 * (1 - phase * 0.6));
+  ctx.beginPath();
+  ctx.arc(s / 2, s / 2, radius, 0, Math.PI * 2);
+  ctx.stroke();
+  // Trailing echo ring.
+  if (phase > 0.2) {
+    ctx.strokeStyle = `rgba(255,255,255,${0.4 * fade})`;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(s / 2, s / 2, radius * 0.62, 0, Math.PI * 2);
+    ctx.stroke();
+  }
+  // Bright core flash early in the clip.
+  if (phase < 0.4) {
+    radialGlow(ctx, s, 1, 6 + phase * 10, 0.8 * (1 - phase / 0.4));
   }
 }
 
