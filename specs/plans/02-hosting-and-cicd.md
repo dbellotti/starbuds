@@ -87,19 +87,34 @@ Region: pick the Fly region nearest the group (e.g. `sea`/`lax`/`ord` for US,
 - [x] `.github/workflows/ci.yml`, `checks` job — on every PR and push to `main`:
   Node 22 + npm cache → `npm ci` (with `PUPPETEER_SKIP_DOWNLOAD`) → `npm run lint`
   → `npm run typecheck` → `npm run build` → `npm run smoke`.
-- [x] `.github/workflows/ci.yml`, `deploy` job — push to `main` only, `needs: checks`:
-  `superfly/flyctl-actions/setup-flyctl` → `flyctl deploy --remote-only`
-  (builds the Docker image on Fly's builders, so CI stays fast).
-  `concurrency: deploy-production` with `cancel-in-progress: false` so rapid
-  merges queue instead of racing; `FLY_API_TOKEN` from repo secrets.
+- [x] Deploys: handled by **Fly.io's GitHub integration** — the repo is connected
+  in the Fly dashboard, which builds and deploys `fly.toml` on push to `main`
+  (and offers a manual Deploy button). No `FLY_API_TOKEN` or Actions deploy job
+  needed. Trade-off: Fly deploys even when the `checks` job is red.
+
+  *Alternative (CI-gated deploys):* disconnect the GitHub integration in the Fly
+  dashboard and add a `deploy` job to `ci.yml` with `needs: checks`,
+  `if: github.event_name == 'push' && github.ref == 'refs/heads/main'`,
+  `concurrency: deploy-production` (`cancel-in-progress: false`), running
+  `superfly/flyctl-actions/setup-flyctl` then `flyctl deploy --remote-only` with
+  a `FLY_API_TOKEN` secret. The token can be created without the CLI: Fly
+  dashboard → Tokens → create an app-scoped deploy token → paste into
+  GitHub → Settings → Secrets and variables → Actions.
 
 ### One-time manual setup (account owner)
 
-1. Create a Fly.io account, install `flyctl`.
-2. `fly apps create starbuds` (or another free name — it becomes `<name>.fly.dev`).
-3. `fly tokens create deploy -x 999999h` → save as the `FLY_API_TOKEN` repo secret
-   (GitHub → Settings → Secrets and variables → Actions).
-4. First deploy can be run locally (`fly deploy`) or by merging the workflow.
+1. Create a Fly.io account and app (`starbuds`, served at `<name>.fly.dev`).
+2. Connect the GitHub repo to the app in the Fly dashboard (done).
+3. Move `.github/ci.yml` to `.github/workflows/ci.yml` to enable the checks
+   workflow — bot tokens can't create workflow files, so this needs a human
+   push or the GitHub web editor.
+
+### Notes from the first deploy
+
+- Region `sea` is deprecated on Fly (new machines can't be provisioned there);
+  `primary_region` is now `sjc`.
+- The server runs from TypeScript source via `tsx` in the container — see the
+  Dockerfile note above.
 
 ## Later niceties (out of scope for the first pass)
 

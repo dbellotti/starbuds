@@ -34,21 +34,8 @@ jobs:
       - name: Smoke test
         run: npm run smoke
 
-  deploy:
-    name: Deploy demo to Fly.io
-    needs: checks
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    runs-on: ubuntu-latest
-    # Queue deploys instead of overlapping when merges land back-to-back.
-    concurrency:
-      group: deploy-production
-      cancel-in-progress: false
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: superfly/flyctl-actions/setup-flyctl@master
-
-      - name: Deploy
-        run: flyctl deploy --remote-only
-        env:
-          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+# Deploys are handled by Fly.io's GitHub integration (repo connected in the
+# Fly dashboard), so there is no deploy job here. To switch to CI-gated
+# deploys instead, disconnect the Fly integration and add a job that runs
+# `flyctl deploy --remote-only` with a FLY_API_TOKEN secret, gated on the
+# checks job — see specs/plans/02-hosting-and-cicd.md.
