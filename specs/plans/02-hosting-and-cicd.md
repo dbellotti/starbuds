@@ -115,6 +115,14 @@ Region: pick the Fly region nearest the group (e.g. `sea`/`lax`/`ord` for US,
   `primary_region` is now `sjc`.
 - The server runs from TypeScript source via `tsx` in the container — see the
   Dockerfile note above.
+- **Fly's first deploy creates two machines by default** (`fly deploy` implies
+  `--ha`), which breaks the single-instance constraint above: each machine runs
+  its own in-memory `GameWorld`, and fly-proxy load-balances new connections
+  across them, so players land in separate parallel matches. Nothing in
+  `fly.toml` caps machine count (`min_machines_running` only controls how many
+  stay awake). Fix once with `fly scale count 1 -a starbuds` and verify with
+  `fly status`; subsequent deploys update machines in place and won't add more.
+  If the app is ever recreated, run the first deploy with `fly deploy --ha=false`.
 
 ## Later niceties (out of scope for the first pass)
 

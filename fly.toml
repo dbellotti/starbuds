@@ -4,6 +4,20 @@
 # is served at https://<name>.fly.dev. Set `primary_region` to the region
 # closest to your play group (https://fly.io/docs/reference/regions/), e.g.
 # sjc/lax/ord/iad for the US, ams/fra for Europe.
+#
+# IMPORTANT: this app must run on exactly ONE machine. The game server keeps
+# the entire world in memory (one GameWorld per process, no rooms, no shared
+# state), so two machines means two parallel universes — Fly's proxy will
+# round-robin players between them and nobody ends up in the same match.
+# Fly creates TWO machines by default on the first deploy (its HA default);
+# fix an existing app with:
+#
+#   fly scale count 1 -a starbuds
+#
+# and verify with `fly status`. Later deploys update machines in place and
+# won't add more. If the app is ever recreated, run the first deploy with
+# `fly deploy --ha=false`. Note that `min_machines_running` below only
+# controls how many machines stay AWAKE, not how many EXIST.
 
 app = "starbuds"
 primary_region = "sjc"
