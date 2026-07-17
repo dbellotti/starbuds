@@ -1,0 +1,31 @@
+# Fly.io app configuration — https://fly.io/docs/reference/configuration/
+#
+# `app` must match the app you created with `fly apps create <name>`; the demo
+# is served at https://<name>.fly.dev. Set `primary_region` to the region
+# closest to your play group (https://fly.io/docs/reference/regions/), e.g.
+# sea/lax/ord/iad for the US, ams/fra for Europe.
+
+app = "starbuds"
+primary_region = "sea"
+
+[build]
+
+[http_service]
+  internal_port = 7777
+  force_https = true
+  # Suspend the machine when nobody is connected (websocket connections count
+  # as activity) and wake it on the next request, so idle time costs ~nothing.
+  auto_stop_machines = "suspend"
+  auto_start_machines = true
+  min_machines_running = 0
+
+  [[http_service.checks]]
+    interval = "30s"
+    timeout = "5s"
+    grace_period = "10s"
+    method = "GET"
+    path = "/healthz"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"

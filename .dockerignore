@@ -1,0 +1,14 @@
+.git
+.github
+node_modules
+packages/*/node_modules
+packages/*/dist
+logs
+docs
+specs
+scripts
+*.md
+.env
+.env.*
+Dockerfile
+fly.toml

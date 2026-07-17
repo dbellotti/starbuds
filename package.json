@@ -15,7 +15,7 @@
     "replay:snapshots": "tsx scripts/replay-snapshots.ts",
     "replay:inputs": "tsx scripts/replay-inputs.ts",
     "matchmaking:test": "tsx scripts/matchmaking-harness.ts",
-    "smoke": "node scripts/smoke-test.mjs",
+    "smoke": "tsx scripts/smoke-test.mjs",
     "perf:fps": "node scripts/perf-metrics.mjs",
     "armory:capture": "node scripts/capture-armory-preview.mjs",
     "telemetry:summary": "node scripts/telemetry-summary.mjs"

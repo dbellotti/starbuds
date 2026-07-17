@@ -5,6 +5,8 @@ import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import WebSocket from 'ws';
 
+import { NETWORK_PROTOCOL_VERSION } from '../packages/shared/src/index.ts';
+
 async function main() {
   const rootDir = path.resolve(fileURLToPath(new URL('..', import.meta.url)));
 
@@ -28,7 +30,7 @@ async function main() {
     ws.send(
       JSON.stringify({
         type: 'hello',
-        protocol: 3,
+        protocol: NETWORK_PROTOCOL_VERSION,
         displayName: 'SmokeBot'
       })
     );
@@ -78,13 +80,18 @@ async function waitForMessage(ws, expectedType) {
     throw new Error(`Timed out waiting for message type ${expectedType}`);
   });
   const message = new Promise((resolve) => {
-    ws.once('message', (raw) => {
+    const onMessage = (raw) => {
       try {
-        resolve(JSON.parse(raw.toString()));
-      } catch (error) {
-        resolve(null);
+        const parsed = JSON.parse(raw.toString());
+        if (parsed?.type === expectedType) {
+          ws.off('message', onMessage);
+          resolve(parsed);
+        }
+      } catch {
+        // Ignore unparseable frames while waiting for the expected type.
       }
-    });
+    };
+    ws.on('message', onMessage);
   });
   return Promise.race([timeout, message]);
 }
