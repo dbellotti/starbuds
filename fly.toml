@@ -3,10 +3,10 @@
 # `app` must match the app you created with `fly apps create <name>`; the demo
 # is served at https://<name>.fly.dev. Set `primary_region` to the region
 # closest to your play group (https://fly.io/docs/reference/regions/), e.g.
-# sea/lax/ord/iad for the US, ams/fra for Europe.
+# sjc/lax/ord/iad for the US, ams/fra for Europe.
 
 app = "starbuds"
-primary_region = "sea"
+primary_region = "sjc"
 
 [build]
 
